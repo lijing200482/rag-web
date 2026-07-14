@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG 系统 UML 类图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    background: #0f1117;
+    color: #e0e0e0;
+    min-height: 100vh;
+    overflow-x: auto;
+  }
+  h1 {
+    text-align: center;
+    padding: 24px 0 8px;
+    font-size: 22px;
+    color: #7ec6ff;
+    letter-spacing: 1px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 20px;
+  }
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #aaa;
+  }
+  .legend-color {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1px solid #555;
+  }
+  .diagram-container {
+    display: flex;
+    justify-content: center;
+    padding: 0 20px 40px;
+  }
+  svg { max-width: 100%; height: auto; }
+
+  /* Class box styles */
+  .class-box { cursor: default; }
+  .class-header {
+    font-size: 13px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .class-name { fill: #fff; }
+  .method-name { fill: #c8d6e5; font-size: 11px; }
+  .attr-name { fill: #a0aec0; font-size: 11px; }
+  .separator-line { stroke: #444; stroke-width: 1; }
+  .box-bg { rx: 6; ry: 6; }
+
+  /* Layer colors */
+  .layer-api .box-bg { fill: #1a2332; stroke: #3b82f6; }
+  .layer-retrieval .box-bg { fill: #1a2332; stroke: #8b5cf6; }
+  .layer-vectorstore .box-bg { fill: #1a2332; stroke: #10b981; }
+  .layer-ingestion .box-bg { fill: #1a2332; stroke: #f59e0b; }
+  .layer-models .box-bg { fill: #1a2332; stroke: #ef4444; }
+  .layer-config .box-bg { fill: #1a2332; stroke: #ec4899; }
+
+  /* Arrow styles */
+  .arrow-use { stroke: #666; stroke-width: 1.5; marker-end: url(#arrow-dashed); }
+  .arrow-realize { stroke: #666; stroke-width: 1.5; marker-end: url(#arrow-solid); }
+  .arrow-dep { stroke: #555; stroke-width: 1.2; marker-end: url(#arrow-dep); }
+
+  .layer-label {
+    font-size: 11px;
+    fill: #666;
+    text-anchor: middle;
+    letter-spacing: 2px;
+  }
+  .layer-border {
+    stroke: #2a2d3a;
+    stroke-width: 1;
+    stroke-dasharray: 4,4;
+    fill: none;
+  }
+</style>
+</head>
+<body>
+
+<h1>RAG 系统 — UML 类图</h1>
+<p class="subtitle">FastAPI + LangChain + ChromaDB · MVP Architecture</p>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-color" style="background:#3b82f6"></div>API 层</div>
+  <div class="legend-item"><div class="legend-color" style="background:#8b5cf6"></div>检索与生成层</div>
+  <div class="legend-item"><div class="legend-color" style="background:#10b981"></div>向量存储层</div>
+  <div class="legend-item"><div class="legend-color" style="background:#f59e0b"></div>文档摄入层</div>
+  <div class="legend-item"><div class="legend-color" style="background:#ef4444"></div>数据模型层</div>
+  <div class="legend-item"><div class="legend-color" style="background:#ec4899"></div>配置层</div>
+</div>
+
+<div class="diagram-container">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" width="1200" height="820">
+<defs>
+  <!-- Dashed arrow (use/dependency) -->
+  <marker id="arrow-dashed" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+    <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+  </marker>
+  <!-- Solid arrow (realization/inheritance) -->
+  <marker id="arrow-solid" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+    <polygon points="0 0, 10 3.5, 0 7" fill="#888"/>
+  </marker>
+  <!-- Dependency arrow -->
+  <marker id="arrow-dep" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+    <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+  </marker>
+  <!-- Gradient for class headers -->
+  <linearGradient id="headerGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" style="stop-color:#2a3040"/>
+    <stop offset="100%" style="stop-color:#1e2430"/>
+  </linearGradient>
+</defs>
+
+<!-- ==================== LAYER BORDERS ==================== -->
+<!-- Config Layer -->
+<rect x="20" y="10" width="1160" height="70" class="layer-border" rx="8"/>
+<text x="600" y="30" class="layer-label">CONFIG LAYER</text>
+
+<!-- Models Layer -->
+<rect x="20" y="90" width="1160" height="100" class="layer-border" rx="8"/>
+<text x="600" y="110" class="layer-label">MODELS LAYER</text>
+
+<!-- Ingestion Layer -->
+<rect x="20" y="200" width="1160" height="130" class="layer-border" rx="8"/>
+<text x="600" y="220" class="layer-label">INGESTION LAYER</text>
+
+<!-- Vector Store Layer -->
+<rect x="20" y="345" width="1160" height="120" class="layer-border" rx="8"/>
+<text x="600" y="365" class="layer-label">VECTOR STORE LAYER</text>
+
+<!-- Retrieval Layer -->
+<rect x="20" y="480" width="1160" height="130" class="layer-border" rx="8"/>
+<text x="600" y="500" class="layer-label">RETRIEVAL &amp; GENERATION LAYER</text>
+
+<!-- API Layer -->
+<rect x="20" y="625" width="1160" height="180" class="layer-border" rx="8"/>
+<text x="600" y="645" class="layer-label">API LAYER</text>
+
+
+<!-- ==================== CONFIG LAYER ==================== -->
+<!-- Settings class -->
+<g class="class-box layer-config">
+  <rect x="480" y="25" width="240" height="50" class="box-bg" fill="#1a1525" stroke="#ec4899"/>
+  <line x1="480" y1="48" x2="720" y2="48" class="separator-line"/>
+  <text x="600" y="40" class="class-header class-name">«class» Settings</text>
+  <text x="495" y="62" class="attr-name">+ chroma_persist_dir: str</text>
+  <text x="495" y="75" class="attr-name">+ embedding_provider: str</text>
+  <text x="495" y="88" class="attr-name">+ llm_provider: str</text>
+  <text x="495" y="101" class="attr-name">+ chunk_size: int</text>
+  <text x="495" y="114" class="attr-name">+ top_k: int</text>
+</g>
+
+
+<!-- ==================== MODELS LAYER ==================== -->
+<!-- DocumentInfo -->
+<g class="class-box layer-models">
+  <rect x="80" y="120" width="200" height="55" class="box-bg" fill="#1a1515" stroke="#ef4444"/>
+  <line x1="80" y1="140" x2="280" y2="140" class="separator-line"/>
+  <text x="180" y="133" class="class-header class-name">DocumentInfo</text>
+  <text x="95" y="155" class="attr-name">+ source: str</text>
+  <text x="95" y="168" class="attr-name">+ document_type: str</text>
+  <text x="95" y="181" class="attr-name">+ chunk_count: int</text>
+  <text x="95" y="194" class="attr-name">+ uploaded_at: datetime</text>
+</g>
+
+<!-- QueryRequest -->
+<g class="class-box layer-models">
+  <rect x="340" y="120" width="200" height="55" class="box-bg" fill="#1a1515" stroke="#ef4444"/>
+  <line x1="340" y1="140" x2="540" y2="140" class="separator-line"/>
+  <text x="440" y="133" class="class-header class-name">QueryRequest</text>
+  <text x="355" y="155" class="attr-name">+ question: str</text>
+  <text x="355" y="168" class="attr-name">+ top_k: Optional[int]</text>
+  <text x="355" y="181" class="attr-name">+ include_sources: bool</text>
+  <text x="355" y="194" class="attr-name">+ top_k: Optional[int]</text>
+</g>
+
+<!-- QueryResponse -->
+<g class="class-box layer-models">
+  <rect x="600" y="120" width="200" height="55" class="box-bg" fill="#1a1515" stroke="#ef4444"/>
+  <line x1="600" y1="140" x2="800" y2="140" class="separator-line"/>
+  <text x="700" y="133" class="class-header class-name">QueryResponse</text>
+  <text x="615" y="155" class="attr-name">+ answer: str</text>
+  <text x="615" y="168" class="attr-name">+ sources: Optional[list[dict]]</text>
+</g>
+
+<!-- DeleteRequest -->
+<g class="class-box layer-models">
+  <rect x="860" y="120" width="200" height="55" class="box-bg" fill="#1a1515" stroke="#ef4444"/>
+  <line x1="860" y1="140" x2="1060" y2="140" class="separator-line"/>
+  <text x="960" y="133" class="class-header class-name">DeleteRequest</text>
+  <text x="875" y="155" class="attr-name">+ ids: list[str]</text>
+</g>
+
+
+<!-- ==================== INGESTION LAYER ==================== -->
+<!-- EmbeddingProvider (ABC) -->
+<g class="class-box layer-ingestion">
+  <rect x="60" y="235" width="210" height="70" class="box-bg" fill="#1a1a10" stroke="#f59e0b"/>
+  <line x1="60" y1="255" x2="270" y2="255" class="separator-line"/>
+  <text x="165" y="248" class="class-header class-name">«interface» EmbeddingProvider</text>
+  <text x="75" y="270" class="method-name">+ get_embedder() → Embeddings</text>
+  <text x="75" y="285" class="method-name">+ get_embedder() → Embeddings</text>
+</g>
+
+<!-- LocalEmbeddingProvider -->
+<g class="class-box layer-ingestion">
+  <rect x="330" y="235" width="210" height="70" class="box-bg" fill="#1a1a10" stroke="#f59e0b"/>
+  <line x1="330" y1="255" x2="540" y2="255" class="separator-line"/>
+  <text x="435" y="248" class="class-header class-name">LocalEmbeddingProvider</text>
+  <text x="345" y="270" class="method-name">+ get_embedder() → HuggingFaceEmbeddings</text>
+</g>
+
+<!-- OpenAIEmbeddingProvider -->
+<g class="class-box layer-ingestion">
+  <rect x="600" y="235" width="210" height="70" class="box-bg" fill="#1a1a10" stroke="#f59e0b"/>
+  <line x1="600" y1="255" x2="810" y2="255" class="separator-line"/>
+  <text x="705" y="248" class="class-header class-name">OpenAIEmbeddingProvider</text>
+  <text x="615" y="270" class="method-name">+ get_embedder() → OpenAIEmbeddings</text>
+</g>
+
+<!-- load_document / chunk_documents (functions) -->
+<g class="class-box layer-ingestion">
+  <rect x="870" y="235" width="210" height="70" class="box-bg" fill="#1a1a10" stroke="#f59e0b"/>
+  <line x1="870" y1="255" x2="1080" y2="255" class="separator-line"/>
+  <text x="975" y="248" class="class-header class-name">«module» loaders</text>
+  <text x="885" y="270" class="method-name">+ load_document(path) → list[Document]</text>
+  <text x="885" y="285" class="method-name">SUPPORTED_EXTENSIONS = {".pdf", ".md", ...}</text>
+</g>
+
+<!-- Pipeline -->
+<g class="class-box layer-ingestion">
+  <rect x="330" y="320" width="210" height="70" class="box-bg" fill="#1a1a10" stroke="#f59e0b"/>
+  <line x1="330" y1="340" x2="540" y2="340" class="separator-line"/>
+  <text x="435" y="333" class="class-header class-name">«module» pipeline</text>
+  <text x="345" y="355" class="method-name">+ ingest_file(path, settings, store)</text>
+  <text x="345" y="370" class="method-name">→ load → split → embed → upsert</text>
+</g>
+
+<!-- Splitter -->
+<g class="class-box layer-ingestion">
+  <rect x="600" y="320" width="210" height="70" class="box-bg" fill="#1a1a10" stroke="#f59e0b"/>
+  <line x1="600" y1="340" x2="810" y2="340" class="separator-line"/>
+  <text x="705" y="333" class="class-header class-name">«module» splitter</text>
+  <text x="615" y="355" class="method-name">+ chunk_documents(docs, size, overlap)</text>
+  <text x="615" y="370" class="method-name">→ RecursiveCharacterTextSplitter</text>
+</g>
+
+
+<!-- ==================== VECTOR STORE LAYER ==================== -->
+<!-- VectorStore (ABC) -->
+<g class="class-box layer-vectorstore">
+  <rect x="80" y="380" width="210" height="85" class="box-bg" fill="#101a15" stroke="#10b981"/>
+  <line x1="80" y1="400" x2="290" y2="400" class="separator-line"/>
+  <text x="185" y="393" class="class-header class-name">«interface» VectorStore</text>
+  <text x="95" y="415" class="method-name">+ upsert(documents, embedder)</text>
+  <text x="95" y="430" class="method-name">+ delete_by_source(filename) → int</text>
+  <text x="95" y="445" class="method-name">+ delete_by_ids(ids) → int</text>
+  <text x="95" y="460" class="method-name">+ search(query, embedder, top_k) → list[Doc]</text>
+  <text x="95" y="475" class="method-name">+ get_document_info() → list[dict]</text>
+</g>
+
+<!-- ChromaVectorStore -->
+<g class="class-box layer-vectorstore">
+  <rect x="380" y="380" width="240" height="85" class="box-bg" fill="#101a15" stroke="#10b981"/>
+  <line x1="380" y1="400" x2="620" y2="400" class="separator-line"/>
+  <text x="500" y="393" class="class-header class-name">ChromaVectorStore</text>
+  <text x="395" y="415" class="attr-name">_client: PersistentClient</text>
+  <text x="395" y="430" class="attr-name">_collection: Collection</text>
+  <text x="395" y="445" class="method-name">+ upsert(documents, embedder)</text>
+  <text x="395" y="460" class="method-name">+ delete_by_source(filename) → int</text>
+  <text x="395" y="475" class="method-name">+ search(query, embedder, top_k) → list[Doc]</text>
+</g>
+
+
+<!-- ==================== RETRIEVAL & GENERATION LAYER ==================== -->
+<!-- Retriever -->
+<g class="class-box layer-retrieval">
+  <rect x="100" y="515" width="220" height="70" class="box-bg" fill="#1a1525" stroke="#8b5cf6"/>
+  <line x1="100" y1="535" x2="320" y2="535" class="separator-line"/>
+  <text x="210" y="528" class="class-header class-name">Retriever</text>
+  <text x="115" y="550" class="attr-name">_store: VectorStore</text>
+  <text x="115" y="563" class="attr-name">_embedder: Embeddings</text>
+  <text x="115" y="576" class="attr-name">_top_k: int</text>
+  <text x="115" y="589" class="method-name">+ retrieve(query, top_k?) → list[Document]</text>
+</g>
+
+<!-- PromptTemplates -->
+<g class="class-box layer-retrieval">
+  <rect x="400" y="515" width="220" height="70" class="box-bg" fill="#1a1525" stroke="#8b5cf6"/>
+  <line x1="400" y1="535" x2="620" y2="535" class="separator-line"/>
+  <text x="510" y="528" class="class-header class-name">«module» prompt_templates</text>
+  <text x="415" y="550" class="attr-name">SYSTEM_PROMPT: str</text>
+  <text x="415" y="563" class="attr-name">PROMPT_TEMPLATE: ChatPromptTemplate</text>
+  <text x="415" y="576" class="method-name">Rules: use only context, cite sources</text>
+</g>
+
+<!-- Generator -->
+<g class="class-box layer-retrieval">
+  <rect x="700" y="515" width="240" height="70" class="box-bg" fill="#1a1525" stroke="#8b5cf6"/>
+  <line x1="700" y1="535" x2="940" y2="535" class="separator-line"/>
+  <text x="820" y="528" class="class-header class-name">Generator</text>
+  <text x="715" y="550" class="attr-name">_llm: BaseChatModel</text>
+  <text x="715" y="563" class="attr-name">_prompt: ChatPromptTemplate</text>
+  <text x="715" y="576" class="attr-name">_chain: prompt | llm | StrOutputParser</text>
+  <text x="715" y="589" class="method-name">+ generate(question, context) → str</text>
+</g>
+
+
+<!-- ==================== API LAYER ==================== -->
+<!-- FastAPI app -->
+<g class="class-box layer-api">
+  <rect x="120" y="660" width="240" height="70" class="box-bg" fill="#151a25" stroke="#3b82f6"/>
+  <line x1="120" y1="680" x2="360" y2="680" class="separator-line"/>
+  <text x="240" y="673" class="class-header class-name">FastAPI (main)</text>
+  <text x="135" y="695" class="method-name">GET  /                    → root()</text>
+  <text x="135" y="710" class="method-name">GET  /api/v1/health       → health()</text>
+  <text x="135" y="725" class="method-name">POST /api/v1/documents/upload → upload()</text>
+</g>
+
+<!-- Router -->
+<g class="class-box layer-api">
+  <rect x="440" y="660" width="240" height="70" class="box-bg" fill="#151a25" stroke="#3b82f6"/>
+  <line x1="440" y1="680" x2="680" y2="680" class="separator-line"/>
+  <text x="560" y="673" class="class-header class-name">APIRouter (routes)</text>
+  <text x="455" y="695" class="method-name">GET  /documents           → list_documents()</text>
+  <text x="455" y="710" class="method-name">DELETE /documents/{source} → delete_document()</text>
+  <text x="455" y="725" class="method-name">POST /query               → query()</text>
+</g>
+
+<!-- Dependencies -->
+<g class="class-box layer-api">
+  <rect x="760" y="660" width="240" height="70" class="box-bg" fill="#151a25" stroke="#3b82f6"/>
+  <line x1="760" y1="680" x2="1000" y2="680" class="separator-line"/>
+  <text x="880" y="673" class="class-header class-name">«module» dependencies</text>
+  <text x="775" y="695" class="method-name">@lru_cache def get_settings() → Settings</text>
+  <text x="775" y="710" class="method-name">def get_vector_store() → ChromaVectorStore</text>
+  <text x="775" y="725" class="method-name">def get_embedder() → Embeddings</text>
+</g>
+
+
+<!-- ==================== ARROWS / RELATIONSHIPS ==================== -->
+
+<!-- Settings → models (used by config) -->
+<line x1="600" y1="75" x2="600" y2="120" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- EmbeddingProvider → ChromaVectorStore (dependency via pipeline) -->
+<line x1="165" y1="305" x2="165" y2="380" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- LocalEmbeddingProvider → EmbeddingProvider (realization) -->
+<line x1="330" y1="270" x2="270" y2="270" class="arrow-realize" stroke-dasharray="6,3"/>
+<line x1="270" y1="270" x2="270" y2="235" class="arrow-realize"/>
+
+<!-- OpenAIEmbeddingProvider → EmbeddingProvider (realization) -->
+<line x1="600" y1="270" x2="540" y2="270" class="arrow-realize" stroke-dasharray="6,3"/>
+<line x1="540" y1="270" x2="540" y2="235" class="arrow-realize"/>
+
+<!-- loaders → splitter (pipeline uses both) -->
+<line x1="975" y1="270" x2="710" y2="320" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- splitter → pipeline -->
+<line x1="600" y1="355" x2="540" y2="355" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- ChromaVectorStore → VectorStore (realization) -->
+<line x1="380" y1="422" x2="290" y2="422" class="arrow-realize" stroke-dasharray="6,3"/>
+<line x1="290" y1="422" x2="290" y2="380" class="arrow-realize"/>
+
+<!-- Retriever → VectorStore (uses) -->
+<line x1="320" y1="550" x2="290" y2="465" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- Generator → PromptTemplates (uses) -->
+<line x1="700" y1="550" x2="620" y2="550" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- Router → Retriever (uses) -->
+<line x1="440" y1="700" x2="320" y2="700" class="arrow-dep" stroke-dasharray="4,3"/>
+<line x1="320" y1="700" x2="320" y2="585" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- Router → Generator (uses) -->
+<line x1="680" y1="700" x2="700" y2="700" class="arrow-dep" stroke-dasharray="4,3"/>
+<line x1="700" y1="700" x2="700" y2="585" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- main → routes (mounts) -->
+<line x1="360" y1="695" x2="440" y2="695" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- dependencies → Settings -->
+<line x1="760" y1="695" x2="720" y2="695" class="arrow-dep" stroke-dasharray="4,3"/>
+<line x1="720" y1="695" x2="720" y2="75" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- query endpoint → QueryRequest/QueryResponse -->
+<line x1="560" y1="660" x2="560" y2="200" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- Upload endpoint → pipeline -->
+<line x1="240" y1="660" x2="240" y2="320" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- List/Delete → VectorStore -->
+<line x1="440" y1="695" x2="380" y2="695" class="arrow-dep" stroke-dasharray="4,3"/>
+<line x1="380" y1="695" x2="380" y2="465" class="arrow-dep" stroke-dasharray="4,3"/>
+
+<!-- Embedder → ChromaVectorStore (via pipeline) -->
+<line x1="435" y1="320" x2="380" y2="320" class="arrow-dep" stroke-dasharray="4,3"/>
+<line x1="380" y1="320" x2="380" y2="465" class="arrow-dep" stroke-dasharray="4,3"/>
+
+</svg>
+</div>
+
+</body>
+</html>
