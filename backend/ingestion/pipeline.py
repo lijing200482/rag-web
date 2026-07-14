@@ -6,7 +6,7 @@ from .loaders import load_document
 from .splitter import chunk_documents
 from ..vectorstore.chroma_store import VectorStore
 from .embedder import get_embedding_provider
-from ..config import Settings
+from ..core.config import Settings
 
 logger = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from langchain_core.embeddings import Embeddings
-from ..config import Settings
+from ..core.config import Settings
 
 
 class EmbeddingProvider(ABC):

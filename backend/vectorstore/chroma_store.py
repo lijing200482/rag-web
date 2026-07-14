@@ -5,7 +5,7 @@ import chromadb
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from ..config import Settings
+from ..core.config import Settings
 
 logger = logging.getLogger(__name__)
 
