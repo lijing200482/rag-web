@@ -1,46 +1,52 @@
 <template>
   <div id="app">
-    <!-- 登录/注册页不显示侧边栏 -->
     <template v-if="isAuthPage">
       <router-view />
     </template>
 
     <template v-else>
-      <el-container style="height: 100vh;">
-        <el-aside width="200px">
-          <div class="logo">
-            <h2>RAG 系统</h2>
+      <el-container class="app-layout">
+        <el-aside width="220px" class="app-sidebar">
+          <div class="sidebar-logo" @click="router.push('/')" style="cursor: pointer">
+            <div class="logo-icon">
+              <el-icon :size="24"><DataAnalysis /></el-icon>
+            </div>
+            <span class="logo-text">RAG 系统</span>
           </div>
 
-          <!-- 用户信息 -->
-          <div class="user-info" v-if="user">
-            <el-avatar :size="28">{{ user.username.charAt(0).toUpperCase() }}</el-avatar>
-            <span class="username">{{ user.username }}</span>
-            <el-button text size="small" @click="handleLogout" style="color: rgba(255,255,255,0.65);">
+          <div class="sidebar-user" v-if="user">
+            <el-avatar :size="36" class="user-avatar">
+              {{ user.username.charAt(0).toUpperCase() }}
+            </el-avatar>
+            <div class="user-meta">
+              <div class="user-name">{{ user.username }}</div>
+              <div class="user-role">{{ user.is_superuser ? '管理员' : '用户' }}</div>
+            </div>
+            <el-button text size="small" class="logout-btn" @click="handleLogout">
               退出
             </el-button>
           </div>
 
           <el-menu
             :default-active="activeMenu"
-            class="el-menu-vertical"
+            class="sidebar-menu"
             @select="handleMenuSelect"
           >
-            <el-menu-item index="chat">
-              <el-icon><ChatDotRound /></el-icon>
-              <span>聊天问答</span>
-            </el-menu-item>
-            <el-menu-item index="documents">
-              <el-icon><Document /></el-icon>
-              <span>文档管理</span>
+            <el-menu-item index="home">
+              <el-icon><HomeFilled /></el-icon>
+              <span>首页</span>
             </el-menu-item>
             <el-menu-item index="knowledge">
-              <el-icon><DataAnalysis /></el-icon>
+              <el-icon><FolderOpened /></el-icon>
               <span>知识库</span>
             </el-menu-item>
-            <el-menu-item index="settings">
-              <el-icon><Setting /></el-icon>
-              <span>系统设置</span>
+            <el-menu-item index="chat">
+              <el-icon><ChatDotRound /></el-icon>
+              <span>对话</span>
+            </el-menu-item>
+            <el-menu-item index="api-keys">
+              <el-icon><Key /></el-icon>
+              <span>API 密钥</span>
             </el-menu-item>
             <el-menu-item index="users" v-if="user?.is_superuser">
               <el-icon><User /></el-icon>
@@ -49,7 +55,7 @@
           </el-menu>
         </el-aside>
 
-        <el-main>
+        <el-main class="app-main">
           <router-view />
         </el-main>
       </el-container>
@@ -60,31 +66,25 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useAuthStore } from './stores/auth.js'
 
 const router = useRouter()
 const route = useRoute()
-const activeMenu = ref('chat')
-const user = ref(null)
+const authStore = useAuthStore()
+const activeMenu = ref('home')
 
 const isAuthPage = computed(() => {
   return route.name === 'login' || route.name === 'register'
 })
 
-const loadUser = () => {
-  const raw = localStorage.getItem('user')
-  if (raw) {
-    try { user.value = JSON.parse(raw) } catch { user.value = null }
-  }
-}
+const user = computed(() => authStore.user)
 
 onMounted(() => {
-  loadUser()
-  activeMenu.value = route.name || 'chat'
+  activeMenu.value = route.name || 'home'
 })
 
 watch(() => route.name, (name) => {
-  activeMenu.value = name || 'chat'
-  loadUser()
+  activeMenu.value = name || 'home'
 })
 
 const handleMenuSelect = (index) => {
@@ -93,75 +93,131 @@ const handleMenuSelect = (index) => {
 }
 
 const handleLogout = () => {
-  localStorage.removeItem('token')
-  localStorage.removeItem('user')
-  user.value = null
+  authStore.clearAuth()
   router.push('/login')
 }
 </script>
 
 <style>
-#app {
-  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+/* 布局 */
+.app-layout {
+  height: 100vh;
+  background: var(--page-bg);
 }
 
-.el-aside {
-  background-color: #001529;
-  color: #fff;
+/* 侧边栏 */
+.app-sidebar {
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
+  display: flex;
+  flex-direction: column;
+  user-select: none;
 }
 
-.logo {
-  height: 60px;
+.sidebar-logo {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+.logo-icon {
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.logo h2 {
+  background: var(--color-primary);
   color: #fff;
-  margin: 0;
-  font-size: 18px;
+  border-radius: 8px;
 }
 
-.user-info {
+.logo-text {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 用户信息 */
+.sidebar-user {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--sidebar-border);
 }
 
-.username {
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 13px;
+.user-avatar {
+  flex-shrink: 0;
+  background: var(--color-primary-bg);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.user-meta {
   flex: 1;
+  min-width: 0;
+}
+
+.user-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.el-menu-vertical {
+.user-role {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.logout-btn {
+  color: var(--text-tertiary) !important;
+  flex-shrink: 0;
+}
+.logout-btn:hover {
+  color: var(--color-primary) !important;
+}
+
+/* 菜单 */
+.sidebar-menu {
   border-right: none;
-  background-color: #001529;
+  flex: 1;
+  padding: 8px 0;
 }
 
-.el-menu-vertical .el-menu-item {
-  color: rgba(255, 255, 255, 0.65);
+.sidebar-menu .el-menu-item {
+  height: 44px;
+  line-height: 44px;
+  margin: 2px 8px;
+  border-radius: 8px;
+  color: var(--sidebar-text);
+  font-size: 14px;
 }
 
-.el-menu-vertical .el-menu-item:hover,
-.el-menu-vertical .el-menu-item.is-active {
-  color: #fff;
-  background-color: #1890ff !important;
+.sidebar-menu .el-menu-item .el-icon {
+  font-size: 18px;
 }
 
-.el-main {
-  background-color: #f5f5f5;
-  padding: 20px;
+.sidebar-menu .el-menu-item:hover {
+  background: var(--sidebar-hover-bg);
+  color: var(--sidebar-text-active);
+}
+
+.sidebar-menu .el-menu-item.is-active {
+  background: var(--color-primary-bg);
+  color: var(--sidebar-text-active);
+  font-weight: 500;
+}
+
+/* 主区域 */
+.app-main {
+  background: var(--page-bg);
+  padding: 0;
   overflow-y: auto;
 }
 </style>

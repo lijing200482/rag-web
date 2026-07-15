@@ -32,13 +32,22 @@ _KEY_PREFIX = "conversation"
 
 def _msg_to_dict(msg: BaseMessage) -> dict:
     role = "user" if isinstance(msg, HumanMessage) else "assistant"
-    return {"role": role, "content": msg.content}
+    d = {"role": role, "content": msg.content}
+    # 透传 sources（仅 assistant 消息携带，刷新后仍可渲染引用卡片）
+    sources = getattr(msg, "additional_kwargs", {}).get("sources")
+    if sources:
+        d["sources"] = sources
+    return d
 
 
 def _dict_to_msg(d: dict) -> BaseMessage:
     if d["role"] == "user":
         return HumanMessage(content=d["content"])
-    return AIMessage(content=d["content"])
+    msg = AIMessage(content=d["content"])
+    # 恢复 sources 到 additional_kwargs
+    if d.get("sources"):
+        msg.additional_kwargs["sources"] = d["sources"]
+    return msg
 
 
 class MySQLBackedRedisHistory(BaseChatMessageHistory):
@@ -151,12 +160,14 @@ class MySQLBackedRedisHistory(BaseChatMessageHistory):
         async with session_factory() as db:
             for msg in messages:
                 role = "user" if isinstance(msg, HumanMessage) else "assistant"
+                # 从 additional_kwargs 取出 sources 一起持久化
+                sources = getattr(msg, "additional_kwargs", {}).get("sources")
                 await db_add_message(
                     session_id=self.session_id,
-                    user_id=self.user_id,
                     role=role,
                     content=msg.content,
                     db=db,
+                    sources=sources,
                 )
 
                 # Write-Through Redis
@@ -183,12 +194,12 @@ class MySQLBackedRedisHistory(BaseChatMessageHistory):
         """清空该会话的全部消息（MySQL + Redis）。"""
         from sqlalchemy import delete
         from ..db.database import async_session as session_factory
-        from ..model.chat_session import ChatMessage
+        from ..app.models import Message
 
         # 清 MySQL
         async with session_factory() as db:
             await db.execute(
-                delete(ChatMessage).where(ChatMessage.session_id == self.session_id)
+                delete(Message).where(Message.chat_id == self.session_id)
             )
             await db.commit()
 
@@ -231,26 +242,41 @@ def _msg_key(session_id: int) -> str:
 
 
 async def _load_from_mysql(session_id: int, user_id: int = 0) -> List[BaseMessage]:
-    """从 MySQL 加载对话历史（回源路径）。"""
+    """从 MySQL 加载对话历史（回源路径）。
+
+    只取最近 N 条（N = settings.redis_conversation_max_messages），
+    避免千条消息全量加载后再裁剪。ORDER BY id DESC + LIMIT N 取最近 N 条，
+    再 reverse() 恢复时间升序。
+    """
     from sqlalchemy import select
     from ..db.database import async_session as session_factory
-    from ..model.chat_session import ChatMessage
+    from ..app.models import Message
+
+    settings = get_settings()
+    limit = settings.redis_conversation_max_messages
 
     async with session_factory() as db:
         stmt = (
-            select(ChatMessage)
-            .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.id.asc())
+            select(Message)
+            .where(Message.chat_id == session_id)
+            .order_by(Message.id.desc())
+            .limit(limit)
         )
         result = await db.execute(stmt)
-        rows = result.scalars().all()
+        rows = list(result.scalars().all())
+
+    rows.reverse()  # 恢复时间升序，便于直接拼接成历史
 
     msgs = []
     for row in rows:
         if row.role == "user":
             msgs.append(HumanMessage(content=row.content))
         else:
-            msgs.append(AIMessage(content=row.content))
+            msg = AIMessage(content=row.content)
+            # 恢复 sources 到 additional_kwargs
+            if row.sources:
+                msg.additional_kwargs["sources"] = row.sources
+            msgs.append(msg)
 
     logger.info(f"MySQL 加载: session={session_id}, {len(msgs)} 条")
     return msgs

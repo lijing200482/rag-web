@@ -21,28 +21,19 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from ..core.config import Settings
 from ..db import get_db
-from ..vectorstore.chroma_store import ChromaVectorStore, VectorStore
-from ..ingestion.embedder import get_embedding_provider
+from ..db.database import async_session
+from ..vectorstore.chroma_store import VectorStore
 from ..retrieval.retriever import Retriever
 from ..retrieval.generator import Generator, assemble_context
 from ..retrieval.llm_factory import get_llm
 from ..retrieval.prompt_templates import PROMPT_TEMPLATE, PROMPT_TEMPLATE_WITH_HISTORY
 from ..schema.query import QueryRequest
-from ..auth.dependencies import get_current_user
-from ..service.chat import get_session
+from ..service.chat import get_session, get_active_kb_ids
 from ..memory import MySQLBackedRedisHistory, ConversationWindow
-from .dependencies import get_settings
+from .dependencies import get_embedder, get_settings, get_vector_store, rate_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-def get_vector_store(settings: Settings = Depends(get_settings)) -> ChromaVectorStore:
-    return ChromaVectorStore(settings)
-
-
-def get_embedder(settings: Settings = Depends(get_settings)):
-    return get_embedding_provider(settings).get_embedder()
 
 
 @router.post("/query/stream")
@@ -53,7 +44,7 @@ async def query_stream(
     store: VectorStore = Depends(get_vector_store),
     embedder=Depends(get_embedder),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(rate_limit(max_calls=10, window_seconds=60)),
 ):
     """SSE 流式问答：逐 token 推送 LLM 生成结果。"""
     logger.info(f"SSE query: {request.question[:50]}... session_id={request.session_id}")
@@ -65,8 +56,17 @@ async def query_stream(
     try:
         top_k = request.top_k or settings.top_k
         retriever = Retriever(store, embedder, top_k=top_k)
-        docs = await retriever.retrieve(request.question)
-        logger.info(f"SSE retrieved {len(docs)} documents")
+
+        # V2: 若指定了 session，按对话关联的知识库检索（隔离）
+        kb_ids: list[int] | None = None
+        if request.session_id is not None and current_user is not None:
+            kb_ids = await get_active_kb_ids(request.session_id, current_user.id, db)
+            # 若对话未关联任何知识库，则 kb_ids=[] → 不过滤（向后兼容）
+            if not kb_ids:
+                kb_ids = None
+
+        docs = await retriever.retrieve(request.question, kb_ids=kb_ids)
+        logger.info(f"SSE retrieved {len(docs)} documents (kb_ids={kb_ids})")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
 
@@ -91,10 +91,10 @@ async def query_stream(
         conversation_history = await window.get_history_string()
         use_history = True
 
-    # ===== 3) 整理 sources =====
-    sources = None
+    # ===== 3) 整理候选 sources =====
+    all_sources = None
     if request.include_sources:
-        sources = [
+        all_sources = [
             {
                 "source": d.metadata.get("source"),
                 "page": d.metadata.get("page_number"),
@@ -112,11 +112,7 @@ async def query_stream(
         full_answer = ""
 
         try:
-            # 发送 sources 事件
-            if sources:
-                yield _sse_event("sources", sources)
-
-            # 逐 token 流式推送
+            # 逐 token 流式推送（不在开始前发 sources，避免显示未引用的候选）
             async for token in generator.generate_stream(
                 question=request.question,
                 context=context,
@@ -135,26 +131,46 @@ async def query_stream(
                 logger.warning(f"SSE stream interrupted: {str(e)}")
             return
 
-        # ===== 5) 写入记忆（LangChain Memory 管理 MySQL + Redis 双写） =====
+        # ===== 5) 过滤 sources：只保留 LLM 实际引用的来源 =====
+        # 检索返回 top_k 个候选，但 LLM 可能只引用了其中部分。
+        # 解析 full_answer 中出现的 source 文件名，过滤后再发送。
+        cited_sources = None
+        if all_sources and full_answer:
+            cited_sources = [
+                s for s in all_sources
+                if s.get("source") and s["source"] in full_answer
+            ]
+            # 如果全部被引用或全部没被引用（LLM 未按格式引用），用原始列表
+            if not cited_sources:
+                cited_sources = all_sources
+            yield _sse_event("sources", cited_sources)
+
+        # ===== 6) 写入记忆（LangChain Memory 管理 MySQL + Redis 双写） =====
         if use_history and full_answer and history is not None:
             try:
+                # 持久化的是过滤后的 cited_sources，保证刷新后数量一致
+                ai_msg = AIMessage(content=full_answer)
+                if cited_sources:
+                    ai_msg.additional_kwargs["sources"] = cited_sources
                 await history.aadd_messages([
                     HumanMessage(content=request.question),
-                    AIMessage(content=full_answer),
+                    ai_msg,
                 ])
 
                 if not sess.title:
                     from ..service.chat import update_session_title
                     auto_title = request.question.strip().replace("\n", " ")[:200]
-                    await update_session_title(
-                        request.session_id, current_user.id, auto_title, db
-                    )
+                    # 生成器内不持有请求级 session，用短生命周期 session 写标题
+                    async with async_session() as title_db:
+                        await update_session_title(
+                            request.session_id, current_user.id, auto_title, title_db
+                        )
             except Exception as e:
                 logger.error(f"SSE post-write failed: {str(e)}", exc_info=True)
                 yield _sse_event("error", {"detail": "Answer generated but failed to save"})
                 return
 
-        # ===== 6) 结束事件 =====
+        # ===== 7) 结束事件 =====
         yield _sse_event("done", {"session_id": request.session_id})
 
     return StreamingResponse(

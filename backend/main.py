@@ -11,6 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.routes import router as api_router
 from .api.chat_routes import router as chat_router
 from .api.stream_routes import router as stream_router
+from .api.knowledge_routes import router as knowledge_router
+from .api.document_routes import router as document_router
+from .api.api_key_routes import router as api_key_router
 from .auth.routes import router as auth_router
 from .core.config import get_settings
 from .db import init_db
@@ -65,6 +68,9 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(stream_router, prefix="/api/v1")
+app.include_router(knowledge_router, prefix="/api/v1")
+app.include_router(document_router, prefix="/api/v1")
+app.include_router(api_key_router, prefix="/api/v1")
 
 
 @app.get("/")

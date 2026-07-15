@@ -7,6 +7,7 @@ from ..core.config import Settings, get_settings
 from ..db import get_db
 from .security import decode_access_token
 from .service import get_user_by_id
+from ..service.api_key import get_api_key_by_value
 
 logger = logging.getLogger(__name__)
 security_scheme = HTTPBearer(auto_error=False)
@@ -17,25 +18,33 @@ async def get_current_user(
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ):
-    """从 JWT 解析用户。无 token 时返回 None（允许匿名访问）。"""
+    """从 JWT 或 API Key 解析用户。无 token 时返回 None（允许匿名访问）。
+
+    鉴权顺序：
+    1. 先将 Bearer token 当作 JWT 解析。
+    2. JWT 解析失败（过期 / 非法）时，退而将 token 作为 API Key 查库鉴权。
+    仅捕获 JWT 专属异常（ExpiredSignatureError / InvalidTokenError），
+    其他异常（如 DB 连接失败）向上抛出，由全局异常处理返回 500。
+    """
     if credentials is None:
         return None
+    token = credentials.credentials
     try:
-        payload = decode_access_token(credentials.credentials, settings)
+        payload = decode_access_token(token, settings)
         user = await get_user_by_id(payload["user_id"], db)
         # is_active=False 的用户视为未登录，防止禁用后旧 token 仍可用
         if user is None or not user.is_active:
             return None
         return user
-    except ExpiredSignatureError:
-        logger.info("Token expired, user needs to re-login")
-        return None
-    except InvalidTokenError:
-        logger.warning("Invalid or tampered token")
-        return None
-    except Exception as e:
-        logger.error(f"Auth dependency error: {e}", exc_info=True)
-        return None
+    except (ExpiredSignatureError, InvalidTokenError):
+        # JWT 无效（过期/篡改）→ 退而将 token 作为 API Key 鉴权
+        api_key = await get_api_key_by_value(token, db)
+        if api_key is None or not api_key.is_active:
+            return None
+        user = await get_user_by_id(api_key.user_id, db)
+        if user is None or not user.is_active:
+            return None
+        return user
 
 
 async def require_user(current_user=Depends(get_current_user)):

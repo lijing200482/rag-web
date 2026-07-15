@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { useAuthStore } from '../stores/auth.js'
 
 const request = axios.create({
   baseURL: '/api/v1',
@@ -7,9 +8,9 @@ const request = axios.create({
 
 request.interceptors.request.use(
   config => {
-    const token = localStorage.getItem('token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
+    const auth = useAuthStore()
+    if (auth.token) {
+      config.headers.Authorization = `Bearer ${auth.token}`
     }
     return config
   },
@@ -25,8 +26,8 @@ request.interceptors.response.use(
   error => {
     const detail = error.response?.data?.detail || error.message || 'Unknown error'
     if (error.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
+      const auth = useAuthStore()
+      auth.clearAuth()
       window.location.href = '/login'
     }
     console.error('API Error:', detail)

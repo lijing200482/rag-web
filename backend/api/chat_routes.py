@@ -22,9 +22,16 @@ from ..service.chat import (
     update_session_title,
     delete_session,
     get_messages_cursor,
+    link_knowledge_bases,
+    get_linked_knowledge_bases,
+    add_knowledge_base,
+    remove_knowledge_base,
 )
-from ..model.chat_session import ChatMessage  # type: ignore[import-untyped]
 from ..memory import MySQLBackedRedisHistory
+from ..schema.knowledge import (
+    ChatKnowledgeBasesUpdate,
+    KnowledgeBaseResponse,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -123,15 +130,81 @@ async def delete_session_route(
     current_user=Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除会话（MySQL CASCADE 删消息 + Redis 缓存清除）。"""
+    """删除会话（MySQL 显式删消息 + Redis 缓存清除）。"""
     deleted = await delete_session(session_id, current_user.id, db)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
         )
 
-    # 清除 Redis 缓存（MySQL 消息由外键 CASCADE 自动删除）
+    # 清除 Redis 缓存（MySQL 消息已由 delete_session 显式删除）
     history = MySQLBackedRedisHistory(session_id, current_user.id)
     await history.aclear()
 
     return {"deleted": True, "session_id": session_id}
+
+
+# ==================== 对话 ↔ 知识库关联 ====================
+
+@router.get("/sessions/{session_id}/knowledge", response_model=list[KnowledgeBaseResponse])
+async def list_chat_knowledge_route(
+    session_id: int,
+    current_user=Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出对话关联的知识库。"""
+    kbs = await get_linked_knowledge_bases(session_id, current_user.id, db)
+    if not kbs and not await get_session(session_id, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+    return [KnowledgeBaseResponse.model_validate(k, from_attributes=True) for k in kbs]
+
+
+@router.put("/sessions/{session_id}/knowledge")
+async def set_chat_knowledge_route(
+    session_id: int,
+    payload: ChatKnowledgeBasesUpdate,
+    current_user=Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """设置对话关联的知识库列表（整体替换）。"""
+    if not await get_session(session_id, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+    await link_knowledge_bases(session_id, payload.kb_ids, current_user.id, db)
+    return {"chat_id": session_id, "kb_ids": payload.kb_ids}
+
+
+@router.post("/sessions/{session_id}/knowledge/{kb_id}")
+async def add_chat_knowledge_route(
+    session_id: int,
+    kb_id: int,
+    current_user=Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """添加单个知识库关联。"""
+    ok = await add_knowledge_base(session_id, kb_id, current_user.id, db)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session or knowledge base not found or not owned by user",
+        )
+    return {"chat_id": session_id, "kb_id": kb_id, "added": True}
+
+
+@router.delete("/sessions/{session_id}/knowledge/{kb_id}")
+async def remove_chat_knowledge_route(
+    session_id: int,
+    kb_id: int,
+    current_user=Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """移除单个知识库关联。"""
+    if not await get_session(session_id, current_user.id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+    removed = await remove_knowledge_base(session_id, kb_id, current_user.id, db)
+    return {"chat_id": session_id, "kb_id": kb_id, "removed": removed}

@@ -70,11 +70,12 @@ class Generator:
     ) -> AsyncIterator[str]:
         """流式生成回答，逐 token 输出。
 
-        检测 LLM 返回的 chunk 大小：如果服务端将大量 token 打包成
-        一个 chunk（如 StepFun 的行为），则自动拆成 3–10 字的片段，
-        确保前端获得流畅的逐字打字效果。
+        LangChain astream() + StrOutputParser 返回增量片段（每次只含新文本，
+        非累积全文）。直接对每个 chunk 做安全切分即可。
+
+        若服务端将多个 token 打包成一个大 chunk（如 StepFun 的行为），
+        _split_delta 会按标点边界自动拆成小片段，确保前端逐字打字效果。
         """
-        accumulated = ""
         async for chunk in self._chain.astream(
             {
                 "question": question,
@@ -82,15 +83,13 @@ class Generator:
                 "conversation_history": conversation_history,
             }
         ):
-            delta = chunk[len(accumulated):]
-            accumulated = chunk
-            if delta:
-                for piece in _split_delta(delta):
+            if chunk:
+                for piece in _split_delta(chunk):
                     yield piece
 
 
 def format_history(messages) -> str:
-    """将 ORM ChatMessage 列表格式化为历史对话字符串。
+    """将 ORM Message 列表格式化为历史对话字符串。
 
     格式：user: xxx\nassistant: yyy\n...
     """

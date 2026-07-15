@@ -1,5 +1,5 @@
 <template>
-  <div ref="rootEl" class="markdown-body" @click="onClick" v-html="rendered"></div>
+  <div ref="rootEl" class="markdown-body" @click="onClick" v-html="sanitized"></div>
 
   <!-- 行内引用弹窗：fixed 定位，浮在视口 -->
   <Teleport to="body">
@@ -24,6 +24,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { Document } from '@element-plus/icons-vue'
 
 const props = defineProps({
@@ -81,6 +82,12 @@ const rendered = computed(() => {
     return `<p>${escapeHtml(props.content || '')}</p>`
   }
 })
+
+// marked v12 已移除内置 sanitize，LLM 输出可能含 <img onerror=...> 等危险标签，
+// 这里用 DOMPurify 在注入 DOM 前清洗，保留白名单标签/属性（含 cite-tag span）
+const sanitized = computed(() => DOMPurify.sanitize(rendered.value, {
+  ADD_ATTR: ['data-cite-idx']
+}))
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({

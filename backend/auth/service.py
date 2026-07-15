@@ -2,7 +2,7 @@
 import logging
 from sqlalchemy import select, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..model.user import User
+from ..app.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ async def create_user(
     email: str, username: str, hashed_pwd: str, db: AsyncSession
 ) -> User:
     """创建用户并返回 ORM 对象。"""
-    user = User(email=email, username=username, hashed_pwd=hashed_pwd)
+    user = User(email=email, username=username, hashed_password=hashed_pwd)
     db.add(user)
     await db.commit()
     await db.refresh(user)

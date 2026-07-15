@@ -1,11 +1,22 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAuthStore } from '../stores/auth.js'
+import HomeView from '../views/HomeView.vue'
 import ChatView from '../views/ChatView.vue'
-import DocumentsView from '../views/DocumentsView.vue'
 import KnowledgeView from '../views/KnowledgeView.vue'
-import SettingsView from '../views/SettingsView.vue'
+import KnowledgeDetail from '../views/KnowledgeDetail.vue'
+import ApiKeyView from '../views/ApiKeyView.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import UsersView from '../views/UsersView.vue'
+
+function isTokenExpired(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]))
+    return Date.now() >= payload.exp * 1000
+  } catch {
+    return true
+  }
+}
 
 const routes = [
   {
@@ -22,18 +33,18 @@ const routes = [
   },
   {
     path: '/',
-    name: 'chat',
-    component: ChatView,
+    name: 'home',
+    component: HomeView,
     meta: { requiresAuth: true },
   },
   {
-    path: '/chat',
+    path: '/home',
     redirect: '/',
   },
   {
-    path: '/documents',
-    name: 'documents',
-    component: DocumentsView,
+    path: '/chat',
+    name: 'chat',
+    component: ChatView,
     meta: { requiresAuth: true },
   },
   {
@@ -43,9 +54,15 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
-    path: '/settings',
-    name: 'settings',
-    component: SettingsView,
+    path: '/knowledge/:kbId',
+    name: 'knowledge-detail',
+    component: KnowledgeDetail,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/api-keys',
+    name: 'api-keys',
+    component: ApiKeyView,
     meta: { requiresAuth: true },
   },
   {
@@ -53,6 +70,11 @@ const routes = [
     name: 'users',
     component: UsersView,
     meta: { requiresAuth: true, requiresAdmin: true },
+  },
+  {
+    path: '/:pathMatch(.*)*',
+    name: 'NotFound',
+    redirect: '/',
   },
 ]
 
@@ -62,16 +84,19 @@ const router = createRouter({
 })
 
 router.beforeEach((to, from, next) => {
-  const token = localStorage.getItem('token')
-  const userStr = localStorage.getItem('user')
-  let user = null
-  try { user = userStr ? JSON.parse(userStr) : null } catch {}
+  const auth = useAuthStore()
 
-  if (to.meta.requiresAuth && !token) {
+  // JWT 过期检测
+  if (auth.token && isTokenExpired(auth.token)) {
+    auth.clearAuth()
+    return next('/login')
+  }
+
+  if (to.meta.requiresAuth && !auth.isLoggedIn) {
     next('/login')
-  } else if (to.meta.guest && token) {
-    next('/chat')
-  } else if (to.meta.requiresAdmin && !user?.is_superuser) {
+  } else if (to.meta.guest && auth.isLoggedIn) {
+    next('/')
+  } else if (to.meta.requiresAdmin && !auth.isSuperuser) {
     // 非管理员访问管理页面 → 跳回首页
     next('/')
   } else {

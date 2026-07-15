@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     # 检索参数
     top_k: int = 4
+    # 相似度分数阈值（cosine distance，越小越相似）
+    # 超过此阈值的文档视为不相关并过滤掉。0=完全相同，2=完全相反。
+    # 设为 None 则禁用过滤（返回 top_k 结果不论相关度）
+    similarity_threshold: float | None = 0.5
 
     # 对话记忆窗口：注入 prompt 的最近消息条数
     memory_window: int = 10
