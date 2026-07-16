@@ -4,20 +4,17 @@
     创建知识库  → INSERT knowledge_bases
     上传文档    → INSERT document_uploads (pending) + processing_tasks (pending)
                 → 异步 pipeline 处理：切片/向量化/写入 documents+chunks/更新状态
-    检索        → 按 kb_ids 在 ChromaDB 中过滤检索
+    检索        → 按 kb_ids 在向量存储中过滤检索
 
 权限：所有操作校验 knowledge_bases.user_id == current_user.id
 """
 from __future__ import annotations
 
-import hashlib
 import logging
-from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from ..app.models import (
     Document,
@@ -120,7 +117,7 @@ async def delete_knowledge(
 
     按显式顺序删除以避免外键约束问题（与 delete_session 同思路）：
         chunks → uploads → tasks → documents → knowledge_base
-    ChromaDB 中的向量数据由调用方（路由层）单独清理。
+    向量存储中的向量数据由调用方（路由层）单独清理。
     """
     kb = await get_knowledge(kb_id, user_id, db)
     if kb is None:
@@ -226,11 +223,11 @@ async def delete_document(
     db: AsyncSession,
     store: Optional[Any] = None,
 ) -> bool:
-    """删除文档及其 chunks、processing_tasks，并清理 ChromaDB 向量。
+    """删除文档及其 chunks、processing_tasks，并清理向量存储。
 
     Args:
         store: 可选的向量存储实例。传入时按 (kb_id, file_name) 精确清理
-               该文档在 ChromaDB 中的全部 chunk；None 时跳过向量清理
+               该文档在向量存储中的全部 chunk；None 时跳过向量清理
                （向后兼容，但会留下孤儿向量，建议始终传入）。
 
     Returns:
@@ -240,26 +237,18 @@ async def delete_document(
     if doc is None:
         return False
 
-    # 1) 清理 ChromaDB 中的向量：按 (kb_id, file_name) 精确定位
-    #    ChromaDB 支持 where 字典多字段 AND 过滤
+    # 1) 清理向量存储中的向量：按 (kb_id, file_name) 精确定位
     if store is not None:
         try:
-            # 复用 VectorStore 的 _collection 接口精确删除
-            collection = getattr(store, "_collection", None)
-            if collection is not None:
-                results = collection.get(
-                    where={
-                        "kb_id": doc.knowledge_base_id,
-                        "source": doc.file_name,
-                    }
+            deleted_count = await store.delete_by_kb_id_and_source(
+                doc.knowledge_base_id, doc.file_name
+            )
+            if deleted_count > 0:
+                logger.info(
+                    f"Cleaned {deleted_count} chunks in vector store "
+                    f"for doc_id={doc_id} (kb_id={doc.knowledge_base_id}, "
+                    f"file_name={doc.file_name})"
                 )
-                if results and results.get("ids"):
-                    collection.delete(ids=results["ids"])
-                    logger.info(
-                        f"Cleaned {len(results['ids'])} chunks in vector store "
-                        f"for doc_id={doc_id} (kb_id={doc.knowledge_base_id}, "
-                        f"file_name={doc.file_name})"
-                    )
         except Exception as e:
             # 向量清理失败不阻断 DB 删除流程，仅记录警告
             logger.warning(
@@ -338,31 +327,6 @@ async def list_chunks(
     if has_more:
         rows = rows[:limit]
     return rows, has_more
-
-
-async def get_chunk(
-    chunk_id: str, user_id: int, db: AsyncSession
-) -> DocumentChunk | None:
-    """获取单个 chunk（校验所属 KB 归属权）。"""
-    result = await db.execute(
-        select(DocumentChunk)
-        .join(KnowledgeBase, DocumentChunk.kb_id == KnowledgeBase.id)
-        .where(DocumentChunk.id == chunk_id, KnowledgeBase.user_id == user_id)
-    )
-    return result.scalar_one_or_none()
-
-
-async def delete_chunk(
-    chunk_id: str, user_id: int, db: AsyncSession
-) -> bool:
-    """删除单个 chunk（ChromaDB 向量由调用方清理）。"""
-    chunk = await get_chunk(chunk_id, user_id, db)
-    if chunk is None:
-        return False
-    await db.execute(delete(DocumentChunk).where(DocumentChunk.id == chunk_id))
-    await db.commit()
-    logger.info(f"Chunk deleted: id={chunk_id}, user_id={user_id}")
-    return True
 
 
 # ==================== DocumentUpload ====================
@@ -639,20 +603,3 @@ async def bulk_insert_chunks(
     await db.commit()
     logger.info(f"Bulk inserted {len(objects)} chunks (skipped {skipped} duplicates)")
     return len(objects)
-
-
-# ==================== 工具函数 ====================
-
-def compute_file_hash(file_path: Path) -> str:
-    """计算文件 SHA-256。"""
-    h = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def compute_chunk_id(kb_id: int, file_name: str, chunk_content: str) -> str:
-    """计算 chunk 的 SHA-256 主键：相同内容 → 相同 ID（自动去重）。"""
-    raw = f"{kb_id}:{file_name}:{chunk_content}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

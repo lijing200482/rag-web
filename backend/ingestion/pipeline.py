@@ -2,30 +2,27 @@
 
 V2 改造：
     - 新增 ingest_document() 接收完整的上传上下文（kb_id, upload_id, task_id 等）
-    - 异步执行：加载 → 切片 → 向量化 → 写 ChromaDB
+    - 异步执行：加载 → 切片 → 向量化 → 写入向量存储
     - 同步写入 DB 表：documents + document_chunks
     - 更新 processing_tasks / document_uploads 状态
     - 每个 chunk metadata 持久化 kb_id（用于检索时按知识库过滤）
     - chunk_id 基于 SHA-256 → 相同内容自动去重
-
-保留 ingest_file() 兼容旧的 /documents/upload 端点。
 """
 import asyncio
 import logging
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
-from langchain_core.documents import Document
 from sqlalchemy import select as sa_select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .loaders import load_document
 from .splitter import chunk_documents
-from ..vectorstore.chroma_store import VectorStore
-from .embedder import get_embedding_provider
+from ..vectorstore.milvus_store import VectorStore
 from ..core.config import Settings
 from ..service import knowledge as knowledge_service
+from ..storage import get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +44,7 @@ async def ingest_document(
     store: VectorStore,
     embedder,
     db: AsyncSession,
+    storage_key: str = "",
 ) -> None:
     """V2 完整文档处理流水线。
 
@@ -54,15 +52,32 @@ async def ingest_document(
         ① 更新 task 状态 = processing（独立提交，便于上层观察）
         ② 加载文档（asyncio.to_thread 包装同步 I/O，避免阻塞事件循环）
         ③ 切片（带 kb_id + file_name → 生成稳定 chunk_id）
-        ④ 向量化 + 写入 ChromaDB（metadata 带 kb_id，事务外执行）
+        ④ 向量化 + 写入向量存储（metadata 带 kb_id，事务外执行）
         ⑤⑥⑦ 单一 DB 事务：写入 documents + document_chunks + 更新状态
+
+    远端文件加载（storage_key 非空时）：
+        - 通过 storage.download_to_path() 将 MinIO 对象下载到临时文件
+        - load_document 读取临时文件（LangChain loaders 需要本地路径）
+        - 处理完成后（无论成功失败）清理临时文件
 
     任一步失败 → 回滚：
         - DB 事务自动回滚（db.begin() 上下文管理）
-        - ④ 已执行 → 按 (kb_id, file_name) 清理 ChromaDB 中刚写入的向量
+        - ④ 已执行 → 按 (kb_id, file_name) 清理向量存储中刚写入的向量
         - 标记 task = failed, upload = failed（含 error_message）
     """
-    vector_written = False  # ④ 已写入 ChromaDB
+    vector_written = False  # ④ 已写入向量存储
+
+    # 远端文件加载：如果提供了 storage_key（MinIO 对象 key），则从远端下载到临时文件
+    # storage_key 为空 → 使用本地 file_path（LocalStorage 向后兼容）
+    if storage_key:
+        storage = get_storage(settings)
+        temp_path = Path(tempfile.gettempdir()) / f"rag_ingest_{file_hash[:8]}_{file_name}"
+        await storage.download_to_path(storage_key, temp_path)
+        actual_path = temp_path
+        _cleanup = True
+    else:
+        actual_path = file_path
+        _cleanup = False
 
     try:
         # ① task → processing（独立提交，便于上层轮询观察处理中状态）
@@ -74,7 +89,7 @@ async def ingest_document(
         await db.commit()
 
         # ② 加载文档（同步 I/O 放入线程池，避免阻塞事件循环）
-        docs = await asyncio.to_thread(load_document, file_path)
+        docs = await asyncio.to_thread(load_document, actual_path)
         logger.info(
             f"[Pipeline] Loaded {len(docs)} page(s) from {file_name} (kb_id={kb_id})"
         )
@@ -100,7 +115,7 @@ async def ingest_document(
             f"(chunk_size={settings.chunk_size}, overlap={settings.chunk_overlap})"
         )
 
-        # ④ 向量化 + 写入 ChromaDB（事务外执行，DB 事务失败时在 except 中清理）
+        # ④ 向量化 + 写入向量存储（事务外执行，DB 事务失败时在 except 中清理）
         await store.upsert(chunks, embedder)
         vector_written = True
         logger.info(f"[Pipeline] Upserted {len(chunks)} chunks to vector store")
@@ -206,7 +221,7 @@ async def ingest_document(
             exc_info=True,
         )
 
-        # 回滚 ChromaDB 中刚写入的向量（DB 事务已由 db.begin() 自动回滚）
+        # 回滚向量存储中刚写入的向量（DB 事务已由 db.begin() 自动回滚）
         if vector_written:
             await _rollback_pipeline(
                 kb_id=kb_id,
@@ -231,6 +246,15 @@ async def ingest_document(
             logger.error(f"[Pipeline] Failed to update failure status: {update_err}")
             await db.rollback()
         raise
+    finally:
+        # 清理远端下载到本地的临时文件（storage_key 模式下才会产生）
+        if _cleanup:
+            try:
+                actual_path.unlink(missing_ok=True)
+            except Exception as cleanup_err:
+                logger.warning(
+                    f"[Pipeline] Temp file cleanup failed: {cleanup_err}"
+                )
 
 
 async def _rollback_pipeline(
@@ -238,84 +262,23 @@ async def _rollback_pipeline(
     file_name: str,
     store: VectorStore,
 ) -> None:
-    """失败后回滚 ChromaDB 中已写入的向量，避免孤儿向量。
+    """失败后回滚向量存储中已写入的向量，避免孤儿向量。
 
     DB 记录由 db.begin() 事务自动回滚，无需手动清理。
-    ChromaDB 是外部系统，不在 DB 事务内，需要按 (kb_id, file_name) 手动清理。
+    向量存储是外部系统，不在 DB 事务内，需要按 (kb_id, file_name) 手动清理。
+    V3 起统一调用 VectorStore.delete_by_kb_id_and_source 抽象接口，
+    不再依赖具体实现的私有属性。
     清理失败仅记录 warning，不阻断异常重新抛出。
     """
     try:
-        collection = getattr(store, "_collection", None)
-        if collection is not None:
-            results = collection.get(
-                where={"kb_id": kb_id, "source": file_name}
+        count = await store.delete_by_kb_id_and_source(kb_id, file_name)
+        if count > 0:
+            logger.info(
+                f"[Pipeline] Rollback: cleaned {count} chunks "
+                f"in vector store (kb_id={kb_id}, file_name={file_name})"
             )
-            if results and results.get("ids"):
-                collection.delete(ids=results["ids"])
-                logger.info(
-                    f"[Pipeline] Rollback: cleaned {len(results['ids'])} chunks "
-                    f"in vector store (kb_id={kb_id}, file_name={file_name})"
-                )
     except Exception as rollback_err:
         logger.warning(
             f"[Pipeline] Rollback: failed to clean vector store "
             f"(kb_id={kb_id}, file_name={file_name}): {rollback_err}"
         )
-
-
-# ============================================================
-# 兼容旧接口：ingest_file()
-# ============================================================
-
-async def ingest_file(file_path: Path, settings: Settings, store: VectorStore) -> str:
-    """One-shot ingestion pipeline（旧接口兼容）。
-
-    旧 /documents/upload 端点使用，不写 DB 表，不更新 task 状态。
-    新代码请使用 ingest_document()。
-    """
-    # Step 1: Load document
-    try:
-        docs = load_document(file_path)
-        logger.info(f"[Step 1/4] Loaded {len(docs)} page(s) from {file_path.name}")
-    except Exception as e:
-        logger.error(f"[Step 1/4] Failed to load document: {str(e)}")
-        raise
-
-    # Step 2: Chunk document（无 kb_id，回退到 uuid chunk_id）
-    try:
-        chunks = chunk_documents(docs, settings.chunk_size, settings.chunk_overlap)
-        logger.info(
-            f"[Step 2/4] Split into {len(chunks)} chunks "
-            f"(chunk_size={settings.chunk_size}, overlap={settings.chunk_overlap})"
-        )
-    except Exception as e:
-        logger.error(f"[Step 2/4] Failed to chunk document: {str(e)}")
-        raise
-
-    # Add document-level metadata to every chunk
-    uploaded_at = datetime.now(timezone.utc).isoformat()
-    for chunk in chunks:
-        chunk.metadata["source"] = file_path.name
-        chunk.metadata["document_type"] = file_path.suffix.lstrip(".")
-        chunk.metadata["uploaded_at"] = uploaded_at
-
-    # Step 3: Get embedder
-    try:
-        embedder = get_embedding_provider(settings).get_embedder()
-        logger.info(
-            f"[Step 3/4] Embedder ready "
-            f"(provider={settings.embedding_provider}, model={settings.embedding_model})"
-        )
-    except Exception as e:
-        logger.error(f"[Step 3/4] Failed to initialize embedder: {str(e)}")
-        raise
-
-    # Step 4: Upsert to vector store
-    try:
-        await store.upsert(chunks, embedder)
-        logger.info(f"[Step 4/4] Upserted {len(chunks)} chunks to vector store")
-    except Exception as e:
-        logger.error(f"[Step 4/4] Failed to upsert to vector store: {str(e)}")
-        raise
-
-    return str(file_path)

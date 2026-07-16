@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from ..core.config import Settings
 from .dependencies import get_embedder, get_settings, get_vector_store, rate_limit
 from ..db import get_db
-from ..vectorstore.chroma_store import VectorStore
+from ..vectorstore.milvus_store import VectorStore
 from ..schema.query import QueryRequest, QueryResponse
 from ..retrieval.retriever import Retriever
 from ..retrieval.generator import Generator, assemble_context
@@ -129,4 +129,4 @@ async def query(
         raise
     except Exception as e:
         logger.error(f"Query failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="查询服务暂时不可用，请稍后再试")

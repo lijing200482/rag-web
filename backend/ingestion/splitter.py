@@ -4,7 +4,7 @@ V2 改动：
     - chunk_id 改为基于 (kb_id, file_name, content) 的 SHA-256
       → 相同内容自动去重，与 DocumentChunk 表的 id 主键对齐
     - 每个 chunk 的 hash 字段记录内容 hash（增量更新时判断是否变化）
-    - metadata 中带 kb_id（用于 ChromaDB 检索时按知识库过滤）
+    - metadata 中带 kb_id（用于向量存储检索时按知识库过滤）
 """
 from __future__ import annotations
 

@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from ..core.config import Settings
 from ..db import get_db
 from ..db.database import async_session
-from ..vectorstore.chroma_store import VectorStore
+from ..vectorstore.milvus_store import VectorStore
 from ..retrieval.retriever import Retriever
 from ..retrieval.generator import Generator, assemble_context
 from ..retrieval.llm_factory import get_llm
@@ -68,7 +68,9 @@ async def query_stream(
         docs = await retriever.retrieve(request.question, kb_ids=kb_ids)
         logger.info(f"SSE retrieved {len(docs)} documents (kb_ids={kb_ids})")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
+        # 内部异常细节不抛给客户端，仅记录日志（避免泄露 DB 错误、路径等敏感信息）
+        logger.error(f"SSE retrieval failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="检索服务暂时不可用，请稍后再试")
 
     context = assemble_context(docs)
 

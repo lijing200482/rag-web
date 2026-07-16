@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import List, Optional, Sequence
+from typing import List, Sequence
 
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage

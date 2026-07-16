@@ -5,7 +5,7 @@ LangChain 0.3.x 移除了 ConversationBufferWindowMemory，
 """
 from __future__ import annotations
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 
 from .custom_history import MySQLBackedRedisHistory
 

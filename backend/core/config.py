@@ -4,9 +4,15 @@ from typing import Literal
 
 
 class Settings(BaseSettings):
-    # ChromaDB
-    chroma_persist_dir: str = "chroma_db"
-    chroma_collection: str = "rag_collection"
+    # ===== Milvus =====
+    # 部署模式: "lite"(本地文件，零外部依赖) 或 "standalone"(Docker)
+    milvus_mode: Literal["lite", "standalone"] = "lite"
+    # Milvus URI
+    #   Lite 模式: "milvus.db"（本地文件路径，相对于项目根目录）
+    #   Standalone 模式: "http://localhost:19530"
+    milvus_uri: str = "milvus.db"
+    # Collection 名称
+    milvus_collection: str = "rag_collection"
 
     # Embedding 提供者: "local", "openai", 或 "ollama"
     embedding_provider: Literal["local", "openai", "ollama"] = "ollama"
@@ -26,16 +32,30 @@ class Settings(BaseSettings):
 
     # 检索参数
     top_k: int = 4
-    # 相似度分数阈值（cosine distance，越小越相似）
-    # 超过此阈值的文档视为不相关并过滤掉。0=完全相同，2=完全相反。
-    # 设为 None 则禁用过滤（返回 top_k 结果不论相关度）
-    similarity_threshold: float | None = 0.5
+    # 相似度分数阈值（Milvus COSINE distance = 1 - cosine_similarity，越小越相似）
+    # nomic-embed-text 在中文场景下相关文档的 distance 普遍在 0.5~0.8 之间，
+    # 阈值过严会把有效结果过滤掉导致 context 为空。
+    # 设为 1.0：相当于 cosine_similarity > 0 即保留，靠 top_k 限制数量。
+    # 设为 None：完全禁用过滤。
+    similarity_threshold: float | None = 1.0
 
     # 对话记忆窗口：注入 prompt 的最近消息条数
     memory_window: int = 10
 
-    # 文档上传目录
+    # ===== 对象存储 =====
+    # 存储后端: "local"(本地文件系统) 或 "minio"(MinIO)
+    storage_backend: Literal["local", "minio"] = "minio"
+
+    # 本地存储根目录（storage_backend=local 时生效）
     documents_dir: str = "documents"
+
+    # MinIO 配置（storage_backend=minio 时生效）
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket: str = "rag-documents"
+    minio_secure: bool = False          # 本地开发用 HTTP
+    minio_region: str = "us-east-1"     # MinIO 默认 region
 
     # JWT
     jwt_secret_key: str = "change-me-in-production"

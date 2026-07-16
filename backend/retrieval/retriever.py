@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from ..vectorstore.chroma_store import VectorStore
+from ..vectorstore.milvus_store import VectorStore
 
 
 class Retriever:

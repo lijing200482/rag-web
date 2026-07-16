@@ -7,7 +7,7 @@ from fastapi import Depends, HTTPException, Request
 from ..auth.dependencies import get_current_user
 from ..core.config import Settings, get_settings as _get_settings
 from ..ingestion.embedder import get_embedding_provider
-from ..vectorstore.chroma_store import ChromaVectorStore
+from ..vectorstore.milvus_store import MilvusVectorStore
 
 
 @lru_cache
@@ -17,13 +17,14 @@ def get_settings() -> Settings:
 
 
 @lru_cache(maxsize=1)
-def get_vector_store() -> ChromaVectorStore:
-    """Cached singleton for ChromaVectorStore.
+def get_vector_store() -> MilvusVectorStore:
+    """Cached singleton for MilvusVectorStore.
 
-    避免每次请求都重建 chromadb.PersistentClient + get_or_create_collection。
+    V3 起由 Milvus 取代 ChromaDB。MilvusClient + Collection 创建较重，
+    使用 lru_cache 单例化避免每次请求重建。
     """
     settings = get_settings()
-    return ChromaVectorStore(settings)
+    return MilvusVectorStore(settings)
 
 
 @lru_cache(maxsize=1)

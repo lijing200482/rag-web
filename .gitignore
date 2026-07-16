@@ -1,6 +1,7 @@
 # Data directories
 documents/
-chroma_db/
+milvus.db
+milvus.db/
 docs/
 
 # Python

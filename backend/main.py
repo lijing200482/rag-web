@@ -18,6 +18,7 @@ from .auth.routes import router as auth_router
 from .core.config import get_settings
 from .db import init_db
 from .cache.redis_client import close_redis
+from .api.dependencies import get_vector_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +48,13 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("RAG Service started")
     yield
-    # 关闭（如需可在此释放资源）
+    # 关闭：释放向量存储、缓存等资源
+    try:
+        store = get_vector_store()
+        store.close()
+        logger.info("Milvus connection closed")
+    except Exception as e:
+        logger.warning(f"Failed to close Milvus connection: {e}")
     await close_redis()
     logger.info("RAG Service shutting down")
 
