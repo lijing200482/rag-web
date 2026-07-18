@@ -169,27 +169,7 @@ rag/
 │   ├── service/             # 业务服务
 │   └── main.py              # FastAPI 入口
 ├── frontend/                # Vue 3 前端
-├── eval/                    # 评估脚本与评测集
 ├── docs/                    # 架构文档
 └── .env                     # 环境变量
 ```
 
-## 评估
-
-`eval/` 目录下提供 MVP 评估框架：
-
-```bash
-# 运行评估（默认 V5-b：Hybrid + Reranker）
-.venv\Scripts\python.exe eval\evaluate.py
-
-# A/B 对比：关闭 Reranker
-.venv\Scripts\python.exe eval\evaluate.py --no-rerank
-
-# A/B 对比：关闭 Hybrid（纯向量）
-.venv\Scripts\python.exe eval\evaluate.py --no-hybrid
-
-# 自定义 top_k
-.venv\Scripts\python.exe eval\evaluate.py --top-k 6
-```
-
-指标：Hit@K / MRR@K / Recall@K / Precision@K
