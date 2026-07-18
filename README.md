@@ -4,7 +4,7 @@
 
 ## 核心特性
 
-- **Small-to-Big 父子索引**：父块 1024 token（喂 LLM）/ 子块 256 token（embedding 检索），解决"语义完整 vs 检索精度"矛盾
+- **Small-to-Big 父子索引**：父块 1024 token/ 子块 256 token，解决"语义完整 vs 检索精度"矛盾
 - **Hybrid 检索**：向量（bge-m3）+ BM25（jieba 分词）用 RRF 融合，兼顾语义召回与关键词精确匹配（订单号/SKU 等场景）
 - **Cross-encoder 二阶段精排**：bge-reranker-v2-m3 弥补 bi-encoder 丢失的 query-doc 交互信息
 - **多知识库隔离**：按 kb_id 过滤检索范围，支持对话绑定知识库
