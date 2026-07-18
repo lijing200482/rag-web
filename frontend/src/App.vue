@@ -8,9 +8,6 @@
       <el-container class="app-layout">
         <el-aside width="220px" class="app-sidebar">
           <div class="sidebar-logo" @click="router.push('/')" style="cursor: pointer">
-            <div class="logo-icon">
-              <el-icon :size="24"><DataAnalysis /></el-icon>
-            </div>
             <span class="logo-text">RAG 系统</span>
           </div>
 
@@ -43,10 +40,6 @@
             <el-menu-item index="chat">
               <el-icon><ChatDotRound /></el-icon>
               <span>对话</span>
-            </el-menu-item>
-            <el-menu-item index="api-keys">
-              <el-icon><Key /></el-icon>
-              <span>API 密钥</span>
             </el-menu-item>
             <el-menu-item index="users" v-if="user?.is_superuser">
               <el-icon><User /></el-icon>
@@ -121,17 +114,6 @@ const handleLogout = () => {
   gap: 10px;
   padding: 0 20px;
   border-bottom: 1px solid var(--sidebar-border);
-}
-
-.logo-icon {
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--color-primary);
-  color: #fff;
-  border-radius: 8px;
 }
 
 .logo-text {

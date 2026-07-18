@@ -4,7 +4,6 @@ import HomeView from '../views/HomeView.vue'
 import ChatView from '../views/ChatView.vue'
 import KnowledgeView from '../views/KnowledgeView.vue'
 import KnowledgeDetail from '../views/KnowledgeDetail.vue'
-import ApiKeyView from '../views/ApiKeyView.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import UsersView from '../views/UsersView.vue'
@@ -57,12 +56,6 @@ const routes = [
     path: '/knowledge/:kbId',
     name: 'knowledge-detail',
     component: KnowledgeDetail,
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/api-keys',
-    name: 'api-keys',
-    component: ApiKeyView,
     meta: { requiresAuth: true },
   },
   {

@@ -22,6 +22,7 @@ from ..app.models import (
     DocumentUpload,
     KnowledgeBase,
     ProcessingTask,
+    chat_knowledge_bases,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,11 @@ async def list_knowledge(
     chunk_count_subq = (
         select(func.count())
         .select_from(DocumentChunk)
-        .where(DocumentChunk.kb_id == KnowledgeBase.id)
+        # V4: 只统计子块（is_parent == false），避免父子双计数导致 chunk_count 翻倍
+        .where(
+            DocumentChunk.kb_id == KnowledgeBase.id,
+            DocumentChunk.is_parent == False,  # noqa: E712
+        )
         .correlate(KnowledgeBase)
         .scalar_subquery()
         .label("chunk_count")
@@ -125,10 +130,16 @@ async def delete_knowledge(
 
     # 按依赖顺序删除子表（叶子 → 根，避免外键约束 1451）
     # 依赖关系：
+    #   chat_knowledge_bases → knowledge_bases  ← 关联表，必须最先删
     #   document_chunks      → documents, knowledge_bases
     #   processing_tasks     → documents, document_uploads, knowledge_bases  ← 必须先于 uploads/documents 删除
     #   document_uploads     → knowledge_bases
     #   documents            → knowledge_bases
+    await db.execute(
+        delete(chat_knowledge_bases).where(
+            chat_knowledge_bases.c.knowledge_base_id == kb_id
+        )
+    )
     await db.execute(
         delete(DocumentChunk).where(DocumentChunk.kb_id == kb_id)
     )
@@ -144,6 +155,14 @@ async def delete_knowledge(
     await db.execute(delete(KnowledgeBase).where(KnowledgeBase.id == kb_id))
     await db.commit()
     logger.info(f"KnowledgeBase deleted: id={kb_id}, user_id={user_id}")
+
+    # V4-B+: 知识库删除后清 BM25 缓存
+    try:
+        from ..retrieval.bm25_retriever import BM25Retriever
+        BM25Retriever.invalidate(kb_id=kb_id)
+    except Exception as cache_err:
+        logger.warning(f"BM25 cache invalidation failed (non-fatal): {cache_err}")
+
     return True
 
 
@@ -179,18 +198,27 @@ async def list_documents(
     page: int,
     limit: int,
     db: AsyncSession,
-) -> tuple[list[Document], bool]:
+) -> tuple[list[Document], bool, int]:
     """分页列出知识库中的文档。
 
     Returns:
-        (documents, has_more)
+        (documents, has_more, total)
     """
     # 先校验 KB 归属
     kb = await get_knowledge(kb_id, user_id, db)
     if kb is None:
-        return [], False
+        return [], False, 0
 
     offset = max(page - 1, 0) * limit
+
+    # 总数统计（独立 count 查询，与翻页解耦）
+    count_stmt = (
+        select(func.count())
+        .select_from(Document)
+        .where(Document.knowledge_base_id == kb_id)
+    )
+    total = (await db.execute(count_stmt)).scalar() or 0
+
     result = await db.execute(
         select(Document)
         .where(Document.knowledge_base_id == kb_id)
@@ -202,7 +230,7 @@ async def list_documents(
     has_more = len(rows) > limit
     if has_more:
         rows = rows[:limit]
-    return rows, has_more
+    return rows, has_more, total
 
 
 async def get_document(
@@ -222,8 +250,13 @@ async def delete_document(
     user_id: int,
     db: AsyncSession,
     store: Optional[Any] = None,
-) -> bool:
-    """删除文档及其 chunks、processing_tasks，并清理向量存储。
+) -> Optional[dict]:
+    """删除文档及其 chunks、processing_tasks、document_uploads，并清理向量存储。
+
+    删除顺序（安全）：
+        1. 先清理 Milvus 向量（按 kb_id + file_name 精确定位）
+        2. 再删 DB 子表（chunks → tasks → uploads → document）
+        3. MinIO 对象由 routes 层用返回的 file_hash 清理
 
     Args:
         store: 可选的向量存储实例。传入时按 (kb_id, file_name) 精确清理
@@ -231,11 +264,12 @@ async def delete_document(
                （向后兼容，但会留下孤儿向量，建议始终传入）。
 
     Returns:
-        是否真的删除了一行。
+        包含 kb_id / file_name / file_hash 的 dict（供 routes 层清理 MinIO）。
+        None 表示文档不存在。
     """
     doc = await get_document(doc_id, user_id, db)
     if doc is None:
-        return False
+        return None
 
     # 1) 清理向量存储中的向量：按 (kb_id, file_name) 精确定位
     if store is not None:
@@ -255,17 +289,41 @@ async def delete_document(
                 f"Failed to clean vector store for doc_id={doc_id}: {e}"
             )
 
-    # 2) 删除子表（chunks 必须先于 documents，避免外键约束）
+    # 2) 查关联的 upload_ids（通过 ProcessingTask 间接关联）
+    result = await db.execute(
+        select(ProcessingTask.document_upload_id).where(
+            ProcessingTask.document_id == doc_id
+        )
+    )
+    upload_ids = [uid for uid in result.scalars().all() if uid is not None]
+
+    # 3) 删 DB 子表（叶子→根，避免外键约束 1451）
     await db.execute(
         delete(DocumentChunk).where(DocumentChunk.document_id == doc_id)
     )
     await db.execute(
         delete(ProcessingTask).where(ProcessingTask.document_id == doc_id)
     )
+    if upload_ids:
+        await db.execute(
+            delete(DocumentUpload).where(DocumentUpload.id.in_(upload_ids))
+        )
     await db.execute(delete(Document).where(Document.id == doc_id))
     await db.commit()
     logger.info(f"Document deleted: id={doc_id}, user_id={user_id}")
-    return True
+
+    # V4-B+: 文档删除后清 BM25 缓存
+    try:
+        from ..retrieval.bm25_retriever import BM25Retriever
+        BM25Retriever.invalidate(kb_id=doc.knowledge_base_id)
+    except Exception as cache_err:
+        logger.warning(f"BM25 cache invalidation failed (non-fatal): {cache_err}")
+
+    return {
+        "kb_id": doc.knowledge_base_id,
+        "file_name": doc.file_name,
+        "file_hash": doc.file_hash,
+    }
 
 
 async def find_document_by_hash(
@@ -305,13 +363,28 @@ async def list_chunks(
     page: int,
     limit: int,
     db: AsyncSession,
-) -> tuple[list[DocumentChunk], bool]:
-    """分页列出 chunk。可按 document_id 过滤。"""
+) -> tuple[list[DocumentChunk], bool, int]:
+    """分页列出 chunk。可按 document_id 过滤。
+
+    Returns:
+        (chunks, has_more, total)
+    """
     kb = await get_knowledge(kb_id, user_id, db)
     if kb is None:
-        return [], False
+        return [], False, 0
 
     offset = max(page - 1, 0) * limit
+
+    # 总数统计（与翻页解耦，document_id 过滤一并应用）
+    count_stmt = (
+        select(func.count())
+        .select_from(DocumentChunk)
+        .where(DocumentChunk.kb_id == kb_id)
+    )
+    if document_id is not None:
+        count_stmt = count_stmt.where(DocumentChunk.document_id == document_id)
+    total = (await db.execute(count_stmt)).scalar() or 0
+
     stmt = (
         select(DocumentChunk)
         .where(DocumentChunk.kb_id == kb_id)
@@ -326,7 +399,7 @@ async def list_chunks(
     has_more = len(rows) > limit
     if has_more:
         rows = rows[:limit]
-    return rows, has_more
+    return rows, has_more, total
 
 
 # ==================== DocumentUpload ====================

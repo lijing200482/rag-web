@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     ForeignKey,
     Integer,
@@ -103,6 +104,13 @@ class DocumentChunk(Base, TimestampMixin):
         - id 使用 SHA-256 哈希作为主键 → 相同内容的块自动具有相同 ID
         - hash 用于增量更新时判断块是否变化
         - chunk_metadata 存储该块的 page_number、offset 等信息
+
+    V4 Small-to-Big 父子索引新增字段：
+        - is_parent: True=父块(用于生成), False=子块(用于检索)
+        - parent_id: 子块指向父块的 chunk_id;父块本身为 NULL
+        - page_content: 块全文。V4-B 起父块全文存这里(不再存 Milvus),
+          检索时子块命中后从本字段回查父块全文。
+          子块也存(便于排错/重建向量库),但检索时不读子块的 page_content。
     """
 
     __tablename__ = "document_chunks"
@@ -117,12 +125,19 @@ class DocumentChunk(Base, TimestampMixin):
     file_name = Column(String(255), nullable=False)
     chunk_metadata = Column(JSON, nullable=True)
     hash = Column(String(64), nullable=False, index=True)
+    # V4: 父子索引字段
+    is_parent = Column(Boolean, nullable=False, default=False, index=True)
+    parent_id = Column(String(64), nullable=True, index=True)
+    # V4-B: 块全文(父块回查数据源,子块也存便于排错)
+    # MySQL 不允许 TEXT 有 DEFAULT,故 nullable;应用层保证非空
+    page_content = Column(LONGTEXT, nullable=True)
 
     knowledge_base = relationship("KnowledgeBase", back_populates="chunks")
     document = relationship("Document", back_populates="chunks")
 
     def __repr__(self) -> str:
-        return f"<DocumentChunk id={self.id[:8]!r}... file_name={self.file_name!r}>"
+        role = "PARENT" if self.is_parent else "CHILD"
+        return f"<DocumentChunk [{role}] id={self.id[:8]!r}... file_name={self.file_name!r}>"
 
 
 class DocumentUpload(Base, TimestampMixin):

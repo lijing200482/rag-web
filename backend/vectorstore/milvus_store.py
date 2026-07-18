@@ -7,7 +7,7 @@ V3 起由 Milvus 取代 ChromaDB：
 
 Collection Schema 严格遵循 docs/V3-向量数据库升级-Milvus方案.md 第二节：
     - 主键 id (VarChar 64) = chunk_id（SHA-256）
-    - embedding (FloatVector 768) = nomic-embed-text 输出维度
+    - embedding (FloatVector 1024) = bge-m3 输出维度（V5：从 nomic-embed-text 768D 升级）
     - 必选标量: text / source / kb_id（建索引）
     - 可选标量: document_type / page_number / chunk_index
     - JSON 元数据: metadata_json（放 hash / uploaded_at 等零散字段）
@@ -31,8 +31,8 @@ from ..core.config import Settings
 
 logger = logging.getLogger(__name__)
 
-# nomic-embed-text 输出 768 维
-_DIMENSION = 768
+# bge-m3 输出 1024 维（V5：从 nomic-embed-text 768D 升级）
+_DIMENSION = 1024
 
 
 def _escape_filter_string(value: str) -> str:
@@ -93,6 +93,14 @@ class VectorStore:
         """按 (kb_id, source) 精确删除。用于 pipeline 失败回滚。"""
         raise NotImplementedError
 
+    async def delete_by_ids(self, chunk_ids: list[str]) -> int:
+        """按 chunk_id 集合精确删除。用于 pipeline 失败回滚的精确清理。
+
+        相比 delete_by_kb_id_and_source，本方法只删本次新写入的向量，
+        避免重试场景下误删同文件名下已成功入库的旧 chunk。
+        """
+        raise NotImplementedError
+
     async def search(
         self,
         query: str,
@@ -109,27 +117,39 @@ class VectorStore:
 
 
 def _build_schema():
-    """构建 Collection Schema（严格按文档 2.2 节）。"""
+    """构建 Collection Schema。
+
+    V4 新增字段：
+        - is_parent (BOOL): 标记是父块还是子块。检索时 filter is_parent==false 只命中子块。
+        - parent_id (VARCHAR 64, nullable): 子块指向父块 chunk_id；父块本身为空字符串。
+    V5 修复：
+        - 所有 VARCHAR 字段显式 enable_analyzer=False，避免 Milvus 2.5+ 对 INVERTED 索引
+          默认启用 text analyzer 触发 tokenizer 服务（127.0.0.1:12306）调用失败。
+          我们对 source/parent_id 只做等值过滤（IN 子句），不需要分词全文检索。
+    """
     schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
     # 主键
     schema.add_field("id", DataType.VARCHAR, max_length=64, is_primary=True)
     # 向量
     schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=_DIMENSION)
     # 必选标量
-    schema.add_field("text", DataType.VARCHAR, max_length=65535)
-    schema.add_field("source", DataType.VARCHAR, max_length=255)
+    schema.add_field("text", DataType.VARCHAR, max_length=65535, enable_analyzer=False)
+    schema.add_field("source", DataType.VARCHAR, max_length=255, enable_analyzer=False)
     schema.add_field("kb_id", DataType.INT64)
     # 可选标量
-    schema.add_field("document_type", DataType.VARCHAR, max_length=20)
+    schema.add_field("document_type", DataType.VARCHAR, max_length=20, enable_analyzer=False)
     schema.add_field("page_number", DataType.INT64, nullable=True)
     schema.add_field("chunk_index", DataType.INT64, nullable=True)
+    # V4: Small-to-Big 父子索引字段
+    schema.add_field("is_parent", DataType.BOOL)
+    schema.add_field("parent_id", DataType.VARCHAR, max_length=64, nullable=True, enable_analyzer=False)
     # JSON 元数据
     schema.add_field("metadata_json", DataType.JSON)
     return schema
 
 
 def _build_index_params():
-    """构建索引参数（严格按文档 2.3 节）。"""
+    """构建索引参数。"""
     index_params = MilvusClient.prepare_index_params()
     # 向量索引：HNSW + COSINE
     index_params.add_index(
@@ -141,6 +161,9 @@ def _build_index_params():
     # 标量索引：加速过滤
     index_params.add_index(field_name="kb_id", index_type="INVERTED")
     index_params.add_index(field_name="source", index_type="INVERTED")
+    # V4: 父子索引过滤字段
+    index_params.add_index(field_name="is_parent", index_type="INVERTED")
+    index_params.add_index(field_name="parent_id", index_type="INVERTED")
     return index_params
 
 
@@ -207,8 +230,11 @@ class MilvusVectorStore(VectorStore):
     def _doc_to_row(doc: Document, embedding: list[float]) -> dict:
         """把 LangChain Document 转为 Milvus 行（按 schema 字段映射）。
 
-        metadata 中提取：chunk_id→id, source, kb_id, document_type,
-        page_number, chunk_index, hash, uploaded_at 等。
+        V4: 新增 is_parent / parent_id 字段处理：
+            - 父块: is_parent=True, parent_id=None
+            - 子块: is_parent=False, parent_id=父块chunk_id
+            - 旧数据（无 is_parent 标记）: 默认 is_parent=False, parent_id=None
+              视为"既是父也是子"的单块模式，检索时仍可命中。
         """
         meta = doc.metadata or {}
         chunk_id = meta.get("chunk_id")
@@ -218,7 +244,7 @@ class MilvusVectorStore(VectorStore):
         # metadata_json 收纳零散字段（保留 hash / uploaded_at / 原始 meta）
         reserved = {
             "chunk_id", "source", "kb_id", "document_type",
-            "page_number", "chunk_index",
+            "page_number", "chunk_index", "is_parent", "parent_id",
         }
         extra_meta: dict[str, Any] = {
             k: v for k, v in meta.items() if k not in reserved
@@ -236,6 +262,10 @@ class MilvusVectorStore(VectorStore):
         page_number = meta.get("page_number")
         chunk_index = meta.get("chunk_index")
 
+        # V4: 父子索引字段（旧数据无标记时默认 False，保持向后兼容）
+        is_parent = bool(meta.get("is_parent", False))
+        parent_id = meta.get("parent_id")  # 父块为 None；子块为父 chunk_id 字符串
+
         return {
             "id": str(chunk_id),
             "embedding": embedding,
@@ -245,12 +275,14 @@ class MilvusVectorStore(VectorStore):
             "document_type": str(meta.get("document_type", "")),
             "page_number": int(page_number) if page_number is not None else None,
             "chunk_index": int(chunk_index) if chunk_index is not None else None,
+            "is_parent": is_parent,
+            "parent_id": str(parent_id) if parent_id is not None else None,
             "metadata_json": extra_meta,
         }
 
     @staticmethod
     def _hits_to_documents(results) -> list[Document]:
-        """把 Milvus 搜索结果转为 LangChain Document 列表（按文档 3.2 节）。
+        """把 Milvus 搜索结果转为 LangChain Document 列表。
 
         results 是 MilvusClient.search 返回的 list[list[hit]]，
         每个 hit 含 id/distance/entity。
@@ -268,6 +300,10 @@ class MilvusVectorStore(VectorStore):
                 metadata["page_number"] = entity.get("page_number")
                 metadata["chunk_index"] = entity.get("chunk_index")
                 metadata["chunk_id"] = hit.get("id", "")
+                # V4: 还原父子标记
+                metadata["is_parent"] = bool(entity.get("is_parent", False))
+                metadata["parent_id"] = entity.get("parent_id")
+                metadata["distance"] = hit.get("distance")
 
                 docs.append(Document(
                     page_content=entity.get("text", ""),
@@ -279,9 +315,15 @@ class MilvusVectorStore(VectorStore):
     # CRUD
     # ------------------------------------------------------------------
     async def upsert(self, documents: list[Document], embedder: Embeddings) -> None:
-        """批量写入：逐条计算 embedding 后 upsert（按文档 3.1 节）。
+        """批量写入：分批计算 embedding 后 upsert（按文档 3.1 节）。
 
         Milvus upsert 会按主键 id 自动覆盖已有记录，天然支持去重 / 重试。
+
+        V5 修复 12306 错误：分批 embed
+            Ollama /api/embed 一次性接收大量文本时，内部 llama-server 子进程
+            tokenize 任务过重会无响应，主进程连接子进程端口失败返回 400。
+            10MB PDF 可切出几百到上千子块，必须分批 embed。
+            批次大小由 settings.embedding_batch_size 控制（默认 16）。
         """
         if not documents:
             return
@@ -297,26 +339,37 @@ class MilvusVectorStore(VectorStore):
                     f"Vector store upsert failed: chunk missing 'chunk_id' (source={doc.metadata.get('source', '?')})"
                 )
 
+        batch_size = max(1, self._settings.embedding_batch_size)
+        total = len(documents)
         try:
-            # 逐条计算 embedding（LangChain embed_documents 接口）
-            texts = [doc.page_content for doc in documents]
-            embeddings = await asyncio.to_thread(embedder.embed_documents, texts)
-
-            rows = [
-                self._doc_to_row(doc, emb)
-                for doc, emb in zip(documents, embeddings)
-            ]
+            # 分批 embed：避免单次请求过大压垮 Ollama llama-server 子进程
+            all_rows: list[dict] = []
+            for start in range(0, total, batch_size):
+                batch_docs = documents[start:start + batch_size]
+                batch_texts = [doc.page_content for doc in batch_docs]
+                batch_embeddings = await asyncio.to_thread(
+                    embedder.embed_documents, batch_texts
+                )
+                all_rows.extend(
+                    self._doc_to_row(doc, emb)
+                    for doc, emb in zip(batch_docs, batch_embeddings)
+                )
+                if total > batch_size:
+                    logger.info(
+                        f"[Milvus] Embedding progress: {min(start + batch_size, total)}/{total} "
+                        f"(batch_size={batch_size})"
+                    )
 
             # 同步 API 放入线程池
             await asyncio.to_thread(
                 self._client.upsert,
                 collection_name=self._collection_name,
-                data=rows,
+                data=all_rows,
             )
             # flush 确保数据写入段文件并刷新 row_count 统计
             await asyncio.to_thread(self._client.flush, self._collection_name)
             logger.info(
-                f"[Milvus] Upserted {len(rows)} chunks to collection '{self._collection_name}'"
+                f"[Milvus] Upserted {len(all_rows)} chunks to collection '{self._collection_name}'"
             )
         except Exception as e:
             logger.error(f"[Milvus] Failed to upsert {len(documents)} documents: {e}")
@@ -329,68 +382,88 @@ class MilvusVectorStore(VectorStore):
         top_k: int = 4,
         kb_ids: list[int] | None = None,
     ) -> list[Document]:
-        """相似度搜索（按文档 3.1 节）。
+        """V4-B 检索：只查子块（父块回查由 Retriever 层从 MySQL 完成）。
 
-        - kb_ids 非空时用布尔表达式过滤 kb_id
-        - 用 similarity_threshold 过滤 cosine distance 过大的结果
-          （Milvus COSINE metric 返回的 distance 越小越相似）
+        流程：
+            1. filter is_parent==false → 只在子块中检索 top_k 个最近邻
+            2. similarity_threshold 过滤 distance 过大的子块
+            3. 返回子块 Document（metadata 含 parent_id 供上层回查）
+
+        父块回查职责已移至 Retriever 层（从 MySQL DocumentChunk 查），
+        本方法只负责向量检索，保持 vectorstore 层职责单一。
         """
-        # 构建 filter_expr
-        filter_expr = None
+        # 构建 filter_expr：强制只检索子块 + 可选 kb_id 过滤
+        filter_parts = ["is_parent == false"]
         if kb_ids:
             ids_str = ", ".join(str(k) for k in kb_ids)
-            filter_expr = f"kb_id in [{ids_str}]"
+            filter_parts.append(f"kb_id in [{ids_str}]")
             logger.info(f"[Milvus] Search with kb_id filter: {kb_ids}")
+        filter_expr = " and ".join(filter_parts)
 
         query_vector = await asyncio.to_thread(embedder.embed_query, query)
 
-        output_fields = [
+        # 子块检索阶段：拉 top_k 个子块（含 metadata）
+        child_output_fields = [
             "text", "source", "kb_id", "document_type",
-            "page_number", "chunk_index", "metadata_json",
+            "page_number", "chunk_index", "is_parent", "parent_id",
+            "metadata_json",
         ]
+        # V4-B: HNSW 检索参数（检查清单 P0-2）
+        # MilvusClient.search 默认 ef=top_k，对父子检索召回率不足。
+        # 显式传入 ef 提升候选集大小，再由 limit=top_k 截断。
+        # metric_type 必须与建库时一致（COSINE）。
+        search_params = {
+            "metric_type": "COSINE",
+            "params": {"ef": self._settings.hnsw_ef},
+        }
         results = await asyncio.to_thread(
             self._client.search,
             collection_name=self._collection_name,
             data=[query_vector],
             limit=top_k,
             filter=filter_expr,
-            output_fields=output_fields,
+            output_fields=child_output_fields,
+            search_params=search_params,
         )
 
-        # results 是 list[list[hit]]，单 query 只有 results[0]
         hits = results[0] if results else []
 
-        # 过滤相似度阈值
-        # Milvus COSINE metric 返回的 distance 越小越相似（与 ChromaDB 一致）
+        # 过滤相似度阈值（Milvus COSINE distance 越小越相似）
         threshold = self._settings.similarity_threshold
-        filtered_docs: list[Document] = []
+        filtered_hits = []
         for hit in hits:
             distance = hit.get("distance", 0.0)
             if threshold is not None and distance > threshold:
                 logger.debug(
-                    f"[Milvus] Filtered out chunk (distance={distance:.4f} > "
+                    f"[Milvus] Filtered out child chunk (distance={distance:.4f} > "
                     f"threshold={threshold}): source="
                     f"{(hit.get('entity', {}) or {}).get('source', '?')}"
                 )
                 continue
-            filtered_docs.append(hit)
+            filtered_hits.append(hit)
 
-        # 把过滤后的 hits 转为 LangChain Document
-        docs = self._hits_to_documents([filtered_docs]) if filtered_docs else []
-
-        if not docs and hits:
-            best = hits[0].get("distance", 0.0) if hits else 0.0
-            logger.warning(
-                f"[Milvus] All {len(hits)} chunks filtered by distance threshold "
-                f"(threshold={threshold}). Best distance={best:.4f}. "
-                "Returning empty list; upstream prompt will handle no-context branch."
+        if not filtered_hits:
+            if hits:
+                best = hits[0].get("distance", 0.0) if hits else 0.0
+                logger.warning(
+                    f"[Milvus] All {len(hits)} child chunks filtered by distance threshold "
+                    f"(threshold={threshold}). Best distance={best:.4f}. "
+                    "Returning empty list; upstream prompt will handle no-context branch."
+                )
+            logger.info(
+                f"[Milvus] Search: query='{query[:30]}...', retrieved="
+                f"{len(hits)}, after_filter=0, kb_ids={kb_ids}"
             )
+            return []
+
+        # 转换子块 hits → Document（含 parent_id / distance 等 metadata）
+        child_docs = self._hits_to_documents([filtered_hits])
 
         logger.info(
-            f"[Milvus] Search: query='{query[:30]}...', retrieved="
-            f"{len(hits)}, after_filter={len(docs)}, kb_ids={kb_ids}"
+            f"[Milvus] Search: query='{query[:30]}...', child_retrieved="
+            f"{len(hits)}, child_after_filter={len(child_docs)}, kb_ids={kb_ids}"
         )
-        return docs
+        return child_docs
 
     async def delete_by_kb_id(self, kb_id: int) -> int:
         """删除某知识库的全部 chunk（按文档 3.1 节）。"""
@@ -439,4 +512,52 @@ class MilvusVectorStore(VectorStore):
             return count
         except Exception as e:
             logger.error(f"[Milvus] delete_by_kb_id_and_source failed: {e}")
+            return 0
+
+    async def delete_by_ids(self, chunk_ids: list[str]) -> int:
+        """按 chunk_id 集合精确删除（pipeline 失败回滚用）。
+
+        相比 delete_by_kb_id_and_source，本方法只删本次新写入的向量，
+        避免重试场景下误删同文件名下已成功入库的旧 chunk。
+
+        MilvusClient.delete 的 filter 不支持 IN 子句超大列表（单次建议 <16384 项），
+        这里分批删除（每批 1000 个），保证大文件重试场景也能稳定回滚。
+        """
+        if not chunk_ids:
+            return 0
+        try:
+            # 分批：单批 filter 表达式长度受限
+            batch_size = 1000
+            total_deleted = 0
+            for i in range(0, len(chunk_ids), batch_size):
+                batch = chunk_ids[i:i + batch_size]
+                # 构造 id in ["xxx", "yyy"] 表达式
+                # chunk_id 是 SHA-256 十六进制，无特殊字符，无需转义
+                ids_quoted = ", ".join(f'"{cid}"' for cid in batch)
+                filter_expr = f"id in [{ids_quoted}]"
+
+                # 先查数量（用于日志和返回值）
+                count_result = await asyncio.to_thread(
+                    self._client.query,
+                    collection_name=self._collection_name,
+                    filter=filter_expr,
+                    output_fields=["id"],
+                )
+                batch_count = len(count_result) if count_result else 0
+
+                await asyncio.to_thread(
+                    self._client.delete,
+                    collection_name=self._collection_name,
+                    filter=filter_expr,
+                )
+                total_deleted += batch_count
+
+            await asyncio.to_thread(self._client.flush, self._collection_name)
+            logger.info(
+                f"[Milvus] Deleted {total_deleted}/{len(chunk_ids)} chunks by ids "
+                f"(batch_size={batch_size})"
+            )
+            return total_deleted
+        except Exception as e:
+            logger.error(f"[Milvus] delete_by_ids failed: {e}")
             return 0

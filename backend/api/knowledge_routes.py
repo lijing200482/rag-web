@@ -155,7 +155,7 @@ async def list_documents_route(
     db: AsyncSession = Depends(get_db),
 ):
     """列出知识库中的文档。"""
-    docs, has_more = await knowledge_service.list_documents(
+    docs, has_more, total = await knowledge_service.list_documents(
         kb_id, current_user.id, page, limit, db
     )
     if not docs and not await knowledge_service.get_knowledge(kb_id, current_user.id, db):
@@ -163,7 +163,60 @@ async def list_documents_route(
     return PageResponse(
         items=[DocumentResponse.model_validate(d, from_attributes=True) for d in docs],
         has_more=has_more,
+        total=total,
     )
+
+
+@router.delete("/{kb_id}/documents/{document_id}")
+async def delete_document_route(
+    kb_id: int,
+    document_id: int,
+    current_user=Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+    store: VectorStore = Depends(get_vector_store),
+    settings: Settings = Depends(get_settings),
+):
+    """删除单个文档及其全部关联数据。
+
+    清理范围（安全顺序）：
+        1. 校验 KB 归属权
+        2. service.delete_document: 删 Milvus 向量 + DB(chunks/tasks/uploads/document)
+        3. 删 MinIO 对象（按 {kb_id}/{hash_prefix}/{file_name} 精确定位）
+
+    向量清理失败不阻断 DB 删除（留下孤儿向量，不影响服务）。
+    MinIO 清理失败也不阻断（留下孤儿对象，不影响服务）。
+    """
+    # 1) 校验 KB 归属权
+    kb = await knowledge_service.get_knowledge(kb_id, current_user.id, db)
+    if kb is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "知识库不存在")
+
+    # 2) 删向量 + DB（service 层统一处理）
+    result = await knowledge_service.delete_document(
+        document_id, current_user.id, db, store=store
+    )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
+
+    # 3) 删 MinIO 对象（用 file_hash 构造精确 key）
+    if settings.storage_backend == "minio" and result.get("file_hash"):
+        try:
+            storage = get_storage(settings)
+            hash_prefix = result["file_hash"][:8]
+            # MinIO key 格式: {kb_id}/{hash_prefix}/{file_name}
+            # 用完整 key 作为 prefix 精确匹配单个对象
+            prefix = f"{kb_id}/{hash_prefix}/{result['file_name']}"
+            deleted = await storage.delete_by_prefix(prefix)
+            logger.info(
+                f"Cleaned {deleted} objects from MinIO for doc_id={document_id}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to clean MinIO for doc_id={document_id}: {e}"
+            )
+
+    return {"deleted": True, "document_id": document_id}
+
 
 
 @router.post(
@@ -308,7 +361,7 @@ async def list_chunks_route(
     db: AsyncSession = Depends(get_db),
 ):
     """列出知识库的全部 chunk。"""
-    chunks, has_more = await knowledge_service.list_chunks(
+    chunks, has_more, total = await knowledge_service.list_chunks(
         kb_id, current_user.id, document_id, page, limit, db
     )
     if not chunks and not await knowledge_service.get_knowledge(kb_id, current_user.id, db):
@@ -316,6 +369,7 @@ async def list_chunks_route(
     return PageResponse(
         items=[DocumentChunkResponse.model_validate(c, from_attributes=True) for c in chunks],
         has_more=has_more,
+        total=total,
     )
 
 

@@ -61,6 +61,11 @@ class DocumentChunkResponse(BaseModel):
     file_name: str
     chunk_metadata: Optional[dict[str, Any]] = None
     hash: str
+    # V4: 父子索引字段
+    is_parent: bool = False
+    parent_id: Optional[str] = None
+    # V4-B: 块全文(列表接口默认不返回,单查时可带)
+    page_content: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -114,9 +119,10 @@ class UploadAcceptedResponse(BaseModel):
 # ==================== 通用分页 ====================
 
 class PageResponse(BaseModel):
-    """通用列表响应（带 has_more 标记）。"""
+    """通用列表响应（带 has_more 标记与 total 总数）。"""
     items: list[Any]
     has_more: bool = False
+    total: int = 0  # 总记录数（用于统计展示）
 
 
 # ==================== 对话-知识库关联 ====================

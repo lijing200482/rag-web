@@ -184,13 +184,3 @@ export const getTask = (taskId) =>
 
 export const retryTask = (taskId) =>
   request.post(`/knowledge/tasks/${taskId}/retry`)
-
-// ==================== API 密钥 ====================
-export const getApiKeys = () =>
-  request.get('/api-keys')
-
-export const createApiKey = (name) =>
-  request.post('/api-keys', { name })
-
-export const deleteApiKey = (id) =>
-  request.delete(`/api-keys/${id}`)

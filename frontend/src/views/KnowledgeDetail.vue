@@ -14,7 +14,7 @@
     <el-row :gutter="16" class="stats-row" v-if="kb">
       <el-col :span="8">
         <el-card shadow="hover">
-          <el-statistic title="文档总数" :value="documents.length" />
+          <el-statistic title="文档总数" :value="docCount" />
         </el-card>
       </el-col>
       <el-col :span="8">
@@ -177,16 +177,15 @@ const loadingTasks = ref(false)
 const uploads = ref([])
 const loadingUploads = ref(false)
 
+// 真实的总计数（由后端 PageResponse.total 提供）
+const docCount = ref(0)
+const chunkCount = ref(0)
+
 // 上传弹窗
 const showUploadDialog = ref(false)
 
 // 组件卸载标志：阻止 pollTasksUntilDone 在离开页面后继续打接口/弹消息
 const isUnmounted = ref(false)
-
-const chunkCount = computed(() => {
-  // 简化：文档列表返回多少条就有多少 chunk（实际应单独查询）
-  return documents.value.length
-})
 
 const statusLabel = computed(() => {
   if (tasks.value.some(t => t.status === 'processing')) return '处理中'
@@ -247,10 +246,23 @@ const loadDocuments = async () => {
   try {
     const res = await getDocumentsByKb(kbId.value, { page: 1, limit: 100 })
     documents.value = res.items || []
+    // 后端 PageResponse.total 是数据库真实总数（独立 count 查询）
+    docCount.value = res.total ?? documents.value.length
   } catch (e) {
     ElMessage.error('加载文档失败：' + (e.message || ''))
   } finally {
     loadingDocs.value = false
+  }
+}
+
+// 只拉 chunk 统计（用 page=1 + limit=1，只为取 total）
+const loadChunkStats = async () => {
+  try {
+    const res = await getChunksByKb(kbId.value, { page: 1, limit: 1 })
+    chunkCount.value = res.total ?? 0
+  } catch (e) {
+    // 静默失败
+    chunkCount.value = 0
   }
 }
 
@@ -280,16 +292,14 @@ const loadUploads = async () => {
 
 const loadAll = async () => {
   loading.value = true
-  await Promise.all([loadKb(), loadDocuments(), loadTasks(), loadUploads()])
+  await Promise.all([loadKb(), loadDocuments(), loadChunkStats(), loadTasks(), loadUploads()])
   loading.value = false
 }
 
 // UploadDialog 上传成功后的回调：results 是 [{file_name, task_id}, ...]
 // 设计：fire-and-forget 后台轮询，不阻塞 UI，不重载整个列表
+// （关闭弹窗的逻辑已挪到 UploadDialog 内部 @uploaded 触发之后由用户操作）
 const onUploaded = (results = []) => {
-  // 立即关闭弹窗，让用户继续操作
-  showUploadDialog.value = false
-
   const taskIds = (results || [])
     .map((r) => r.task_id)
     .filter((id) => id != null)
@@ -360,9 +370,9 @@ const pollTasksUntilDone = async (taskIds, intervalMs = 2000, maxAttempts = 60) 
     await Promise.all(checks)
   }
 
-  // 全部轮询结束后：若有完成的任务，只刷新文档列表（追加新文档）
+  // 全部轮询结束后：若有完成的任务，只刷新文档列表与分块统计
   if (completedTaskIds.size > 0) {
-    await loadDocuments()
+    await Promise.all([loadDocuments(), loadChunkStats()])
   }
 
   if (pendingIds.size > 0) {
@@ -386,7 +396,7 @@ const handleDeleteDoc = async (doc) => {
   try {
     await deleteDocument(doc.id)
     ElMessage.success('删除成功')
-    await loadDocuments()
+    await Promise.all([loadDocuments(), loadChunkStats()])
   } catch (e) {
     ElMessage.error('删除失败：' + (e.message || ''))
   }

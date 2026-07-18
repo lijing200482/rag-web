@@ -12,7 +12,9 @@ from ..db import get_db
 from ..vectorstore.milvus_store import VectorStore
 from ..schema.query import QueryRequest, QueryResponse
 from ..retrieval.retriever import Retriever
-from ..retrieval.generator import Generator, assemble_context
+from ..retrieval.bm25_retriever import BM25Retriever
+from ..retrieval.reranker import Reranker
+from ..retrieval.generator import Generator, assemble_context, extract_cited_sources
 from ..retrieval.prompt_templates import PROMPT_TEMPLATE, PROMPT_TEMPLATE_WITH_HISTORY
 from ..retrieval.llm_factory import get_llm
 from ..service.chat import get_session, get_active_kb_ids
@@ -44,7 +46,23 @@ async def query(
         raise HTTPException(status_code=401, detail="Authentication required for session mode")
 
     try:
-        retriever = Retriever(store, embedder, top_k=request.top_k or settings.top_k)
+        retriever = Retriever(
+            store, embedder,
+            top_k=request.top_k or settings.top_k,
+            db=db,
+            max_parent_chars=settings.max_parent_chars,
+            bm25_retriever=BM25Retriever(db),
+            hybrid_search_enabled=settings.hybrid_search_enabled,
+            hybrid_rrf_k=settings.hybrid_rrf_k,
+            hybrid_vector_top_k=settings.hybrid_vector_top_k,
+            hybrid_bm25_top_k=settings.hybrid_bm25_top_k,
+            reranker=Reranker(
+                model_name=settings.rerank_model,
+                max_length=settings.rerank_max_length,
+            ),
+            rerank_enabled=settings.rerank_enabled,
+            rerank_top_k=settings.rerank_top_k,
+        )
 
         # V2: 若指定了 session，按对话关联的知识库检索（隔离）
         kb_ids: list[int] | None = None
@@ -97,9 +115,7 @@ async def query(
                 }
                 for d in docs
             ]
-            # 只保留 LLM 实际引用的来源（source 文件名在回答中出现）
-            cited = [s for s in all_sources if s.get("source") and s["source"] in answer]
-            sources = cited if cited else all_sources
+            sources = extract_cited_sources(all_sources, answer)
 
         if use_history:
             # 把 sources 注入 AIMessage 一起持久化（刷新后仍可渲染引用卡片）

@@ -24,7 +24,9 @@ from ..db import get_db
 from ..db.database import async_session
 from ..vectorstore.milvus_store import VectorStore
 from ..retrieval.retriever import Retriever
-from ..retrieval.generator import Generator, assemble_context
+from ..retrieval.bm25_retriever import BM25Retriever
+from ..retrieval.reranker import Reranker
+from ..retrieval.generator import Generator, assemble_context, extract_cited_sources
 from ..retrieval.llm_factory import get_llm
 from ..retrieval.prompt_templates import PROMPT_TEMPLATE, PROMPT_TEMPLATE_WITH_HISTORY
 from ..schema.query import QueryRequest
@@ -55,7 +57,23 @@ async def query_stream(
     # ===== 1) 检索 =====
     try:
         top_k = request.top_k or settings.top_k
-        retriever = Retriever(store, embedder, top_k=top_k)
+        retriever = Retriever(
+            store, embedder,
+            top_k=top_k,
+            db=db,
+            max_parent_chars=settings.max_parent_chars,
+            bm25_retriever=BM25Retriever(db),
+            hybrid_search_enabled=settings.hybrid_search_enabled,
+            hybrid_rrf_k=settings.hybrid_rrf_k,
+            hybrid_vector_top_k=settings.hybrid_vector_top_k,
+            hybrid_bm25_top_k=settings.hybrid_bm25_top_k,
+            reranker=Reranker(
+                model_name=settings.rerank_model,
+                max_length=settings.rerank_max_length,
+            ),
+            rerank_enabled=settings.rerank_enabled,
+            rerank_top_k=settings.rerank_top_k,
+        )
 
         # V2: 若指定了 session，按对话关联的知识库检索（隔离）
         kb_ids: list[int] | None = None
@@ -135,16 +153,11 @@ async def query_stream(
 
         # ===== 5) 过滤 sources：只保留 LLM 实际引用的来源 =====
         # 检索返回 top_k 个候选，但 LLM 可能只引用了其中部分。
-        # 解析 full_answer 中出现的 source 文件名，过滤后再发送。
+        # 用正则解析 [filename.ext] 引用标记，按 (source, page) 去重，
+        # 避免"同文件多 chunk 全保留"导致卡片数虚高。
         cited_sources = None
         if all_sources and full_answer:
-            cited_sources = [
-                s for s in all_sources
-                if s.get("source") and s["source"] in full_answer
-            ]
-            # 如果全部被引用或全部没被引用（LLM 未按格式引用），用原始列表
-            if not cited_sources:
-                cited_sources = all_sources
+            cited_sources = extract_cited_sources(all_sources, full_answer)
             yield _sse_event("sources", cited_sources)
 
         # ===== 6) 写入记忆（LangChain Memory 管理 MySQL + Redis 双写） =====
