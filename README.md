@@ -76,25 +76,23 @@ npm run dev
 
 访问 `http://localhost:5173` 查看前端界面。
 
-## API 端点
+## 界面预览
 
-| 端点 | 方法 | 说明 |
-|---|---|---|
-| `/api/v1/health` | GET | 健康检查 |
-| `/api/v1/auth/register` | POST | 用户注册 |
-| `/api/v1/auth/login` | POST | 用户登录（返回 JWT） |
-| `/api/v1/auth/users` | GET | 用户列表（superuser） |
-| `/api/v1/auth/users/{id}/status` | PATCH | 切换用户状态（superuser） |
-| `/api/v1/knowledge` | POST | 创建知识库 |
-| `/api/v1/knowledge` | GET | 列出知识库 |
-| `/api/v1/knowledge/{kb_id}/documents` | POST | 上传文档（multipart/form-data） |
-| `/api/v1/knowledge/{kb_id}/documents` | GET | 列出知识库文档 |
-| `/api/v1/knowledge/{kb_id}` | DELETE | 删除知识库（含级联清理） |
-| `/api/v1/query` | POST | 同步问答 |
-| `/api/v1/query/stream` | POST | SSE 流式问答（推荐） |
-| `/api/v1/chat/sessions` | POST | 创建对话会话 |
-| `/api/v1/chat/sessions` | GET | 列出会话 |
-| `/api/v1/chat/sessions/{id}/messages` | GET | 获取会话历史 |
+### 登录页
+
+![登录页](./assets/screenshot_login.png)
+
+### 首页
+
+![首页](./assets/screenshot_home.png)
+
+### 知识库管理
+
+![知识库管理](./assets/screenshot_knowledge.png)
+
+### 对话问答
+
+![对话问答](./assets/screenshot_chat.png)
 
 ## 架构
 
