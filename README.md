@@ -78,17 +78,19 @@ npm run dev
 
 ## 界面预览
 
-### 登录页
-
-![登录页](./assets/screenshot_login.png)
-
-### 首页
+### 
 
 ![首页](./assets/screenshot_home.png)
 
 ### 知识库管理
 
 ![知识库管理](./assets/screenshot_knowledge.png)
+
+### 知识库页面
+
+![登录页](./assets/screenshot_login.png)
+
+### 首页
 
 ### 对话问答
 
